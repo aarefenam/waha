@@ -1,0 +1,98 @@
+# Template nginx vhost untuk SATU instance WAHA.
+#
+# Placeholder __SLUG__, __DOMAIN__, __PORT__ diisi otomatis oleh:
+#   wahactl nginx <slug>
+# Hasilnya ditulis ke /opt/waha/nginx/generated/waha-<slug>.conf, dan wahactl
+# hanya MENCETAK perintah pemasangannya - tidak pernah menyentuh /etc/nginx
+# sendiri, supaya vhost project lain tidak berisiko.
+#
+# Pemasangan (dijalankan manual):
+#   cp /opt/waha/nginx/generated/waha-__SLUG__.conf /etc/nginx/sites-available/
+#   ln -s ../sites-available/waha-__SLUG__.conf /etc/nginx/sites-enabled/
+#   nginx -t && systemctl reload nginx
+#   certbot --nginx -d __DOMAIN__
+#
+# PRASYARAT sekali saja di level http{} (biasanya /etc/nginx/nginx.conf atau
+# /etc/nginx/conf.d/upgrade.conf) supaya WebSocket /ws jalan:
+#
+#   map $http_upgrade $connection_upgrade {
+#       default upgrade;
+#       ''      close;
+#   }
+
+upstream waha___SLUG__ {
+    # WAHA_PORT dari /opt/waha/instances/__SLUG__/.env
+    server 127.0.0.1:__PORT__;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __DOMAIN__;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name __DOMAIN__;
+
+    # certbot --nginx akan mengisi/menimpa dua baris ini
+    ssl_certificate /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+
+    # Upload media (gambar/video/dokumen) lewat API
+    client_max_body_size 100M;
+
+    access_log /var/log/nginx/waha-__SLUG__.access.log;
+    error_log /var/log/nginx/waha-__SLUG__.error.log;
+
+    location / {
+        proxy_pass http://waha___SLUG__;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket (/ws) & event stream
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        # start session / screenshot bisa lama
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+    }
+
+    # OPSIONAL tapi disarankan: dashboard (/dashboard) dan Swagger UI (di path
+    # root "/") dibatasi IP kantor saja. Endpoint API ada di /api/*, jadi
+    # aplikasi bisnis tetap jalan normal.
+    #location = / {
+    #    allow 203.0.113.10;   # IP kantor
+    #    deny all;
+    #    proxy_pass http://waha___SLUG__;
+    #    proxy_http_version 1.1;
+    #    proxy_set_header Host $host;
+    #    proxy_set_header X-Forwarded-Proto $scheme;
+    #}
+    #location /dashboard {
+    #    allow 203.0.113.10;   # IP kantor
+    #    deny all;
+    #    proxy_pass http://waha___SLUG__;
+    #    proxy_http_version 1.1;
+    #    proxy_set_header Host $host;
+    #    proxy_set_header X-Forwarded-Proto $scheme;
+    #}
+}

@@ -1,0 +1,673 @@
+#!/usr/bin/env bash
+#
+# wahactl - kelola instance WAHA (1 container = 1 nomor WhatsApp = 1 bisnis)
+#
+# Semua operasi HANYA menyentuh resource dengan prefix "waha-".
+# Container, image, network, dan volume project lain tidak pernah disentuh.
+#
+# Install di server: /opt/waha/wahactl
+set -euo pipefail
+
+WAHA_HOME="${WAHA_HOME:-/opt/waha}"
+SRC_DIR="${WAHA_HOME}/src"
+INSTANCES_DIR="${WAHA_HOME}/instances"
+COMPOSE_FILE="${WAHA_HOME}/docker-compose.yml"
+ENV_TEMPLATE="${WAHA_HOME}/env.instance.example"
+PORT_START="${WAHA_PORT_START:-3101}"
+PORT_END="${WAHA_PORT_END:-3199}"
+FLAVOR_DEFAULT="nobrowser"
+BUILDER_NAME="${WAHA_BUILDER_NAME:-waha-builder}"
+# Batas resource untuk proses build. Penting di server bersama: buildkit jalan
+# di dalam daemon docker, jadi `nice`/`ionice` di sisi client TIDAK membatasi
+# apa pun. Satu-satunya cara nyata adalah menjalankan buildkit di container
+# terbatas (driver docker-container) seperti di bawah.
+BUILD_CPUS="${WAHA_BUILD_CPUS:-1}"
+BUILD_MEM="${WAHA_BUILD_MEM:-4g}"
+SHARED_NETWORK="${WAHA_SHARED_NETWORK:-waha-net}"
+# Kredensial Cloudflare untuk membuat rute publik otomatis (opsional).
+# Isi lihat cf-api.env.example. Tanpa file ini, rute dibuat manual lewat dashboard.
+CF_ENV_FILE="${WAHA_CF_ENV:-${WAHA_HOME}/cloudflared/cf-api.env}"
+CF_ROUTE_SCRIPT="${WAHA_HOME}/cf-route.py"
+
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+BOLD=$'\033[1m'
+NC=$'\033[0m'
+
+function die() {
+  echo "${RED}error:${NC} $*" >&2
+  exit 1
+}
+
+function info() {
+  echo "${GREEN}==>${NC} $*"
+}
+
+function warn() {
+  echo "${YELLOW}warn:${NC} $*" >&2
+}
+
+function require_slug() {
+  local slug="${1:-}"
+  [ -n "$slug" ] || die "nama instance wajib diisi. Contoh: wahactl up tokobaju"
+  echo "$slug" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' ||
+    die "nama instance hanya boleh huruf kecil, angka, dan '-' (2-31 karakter)"
+}
+
+function instance_dir() {
+  echo "${INSTANCES_DIR}/$1"
+}
+
+function require_instance() {
+  local slug="$1"
+  local dir
+  dir="$(instance_dir "$slug")"
+  [ -d "$dir" ] || die "instance '$slug' tidak ada. Buat dulu: wahactl new $slug"
+}
+
+function compose() {
+  local slug="$1"
+  shift
+  docker compose \
+    --project-name "waha-${slug}" \
+    --project-directory "$(instance_dir "$slug")" \
+    --file "$COMPOSE_FILE" \
+    "$@"
+}
+
+# Baca satu nilai dari .env instance. Aman kalau key/file tidak ada
+# (penting: script ini pakai `set -o pipefail`).
+function env_get() {
+  local dir="$1" key="$2"
+  sed -n "s/^${key}=//p" "${dir}/.env" 2>/dev/null | tail -1 | tr -d '[:space:]' || true
+}
+
+function used_ports() {
+  grep -hs '^WAHA_PORT=' "${INSTANCES_DIR}"/*/.env 2>/dev/null |
+    cut -d= -f2 | tr -d '[:space:]' | sort -u || true
+}
+
+function next_free_port() {
+  local taken port
+  taken="$(used_ports)"
+  for port in $(seq "$PORT_START" "$PORT_END"); do
+    if echo "$taken" | grep -qx "$port"; then
+      continue
+    fi
+    # pastikan tidak dipakai project lain di server ini
+    if ss -tln 2>/dev/null | grep -q ":${port}\b"; then
+      continue
+    fi
+    echo "$port"
+    return 0
+  done
+  die "tidak ada port bebas di rentang ${PORT_START}-${PORT_END}"
+}
+
+function random_secret() {
+  openssl rand -hex 24
+}
+
+function cmd_build() {
+  local flavor="${1:-$FLAVOR_DEFAULT}"
+  local tag="waha-local:${flavor}"
+  local build_args=()
+
+  case "$flavor" in
+  nobrowser)
+    # Tanpa Chromium: build jauh lebih cepat, image jauh lebih kecil.
+    # Cukup untuk engine GOWS & NOWEB.
+    build_args=(--build-arg USE_BROWSER=none --build-arg WHATSAPP_DEFAULT_ENGINE=GOWS)
+    ;;
+  browser)
+    # Dengan Chromium: dibutuhkan engine WEBJS & WPP.
+    build_args=(--build-arg USE_BROWSER=chromium)
+    ;;
+  *) die "flavor tidak dikenal: ${flavor}. Pilih 'nobrowser' atau 'browser'." ;;
+  esac
+
+  [ -d "$SRC_DIR" ] || die "source tidak ada di ${SRC_DIR}. Clone repo dulu ke sana."
+  info "Build image ${tag} dari ${SRC_DIR} (flavor: ${flavor})"
+  if [ "$flavor" = 'browser' ]; then
+    warn "Flavor 'browser' berat (Chromium + fonts). Jalankan saat server sepi."
+  fi
+  # Tag ganda: tag bergerak (dipakai .env) + tag versi (buat rollback)
+  local version
+  version="$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)"
+
+  if ensure_builder; then
+    docker buildx build --builder "$BUILDER_NAME" --load "$SRC_DIR" \
+      -t "$tag" -t "${tag}-${version}" "${build_args[@]}"
+  else
+    warn "builder terbatas gagal dibuat - build memakai daemon docker tanpa batas CPU. Pastikan server sedang sepi."
+    docker build "$SRC_DIR" -t "$tag" -t "${tag}-${version}" "${build_args[@]}"
+  fi
+  info "Selesai. Image: ${tag} (versi: ${tag}-${version})"
+  docker image ls --filter "reference=${tag}*"
+}
+
+# Buildkit di container terbatas, supaya build tidak menghabiskan CPU/RAM
+# server dan mengganggu project lain.
+function ensure_builder() {
+  if docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
+    return 0
+  fi
+  info "Membuat builder '${BUILDER_NAME}' (batas ${BUILD_CPUS} CPU, ${BUILD_MEM} RAM)"
+  docker buildx create \
+    --name "$BUILDER_NAME" \
+    --driver docker-container \
+    --driver-opt "cpu-quota=$((BUILD_CPUS * 100000))" \
+    --driver-opt 'cpu-period=100000' \
+    --driver-opt "memory=${BUILD_MEM}" \
+    --bootstrap >/dev/null 2>&1
+}
+
+function flavors_in_use() {
+  grep -hs '^WAHA_IMAGE=' "${INSTANCES_DIR}"/*/.env 2>/dev/null |
+    cut -d= -f2 | cut -d: -f2 | tr -d '[:space:]' | sort -u || true
+}
+
+function cmd_new() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  shift || true
+  local dir
+  dir="$(instance_dir "$slug")"
+  [ -d "$dir" ] && die "instance '$slug' sudah ada di ${dir}"
+  [ -f "$ENV_TEMPLATE" ] || die "template tidak ada: ${ENV_TEMPLATE}"
+
+  # Argumen sisa: angka = port, sisanya = domain publik
+  local port='' domain='' arg
+  for arg in "$@"; do
+    if echo "$arg" | grep -Eq '^[0-9]+$'; then
+      port="$arg"
+    else
+      domain="$arg"
+    fi
+  done
+  [ -n "$port" ] || port="$(next_free_port)"
+
+  local api_key dash_pass swagger_pass
+  api_key="$(random_secret)"
+  dash_pass="$(random_secret)"
+  swagger_pass="$(random_secret)"
+
+  mkdir -p "${dir}/sessions" "${dir}/media"
+  sed \
+    -e "s|^WAHA_INSTANCE=.*|WAHA_INSTANCE=${slug}|" \
+    -e "s|^WAHA_PORT=.*|WAHA_PORT=${port}|" \
+    -e "s|^WAHA_API_KEY=.*|WAHA_API_KEY=${api_key}|" \
+    -e "s|^WAHA_DASHBOARD_PASSWORD=.*|WAHA_DASHBOARD_PASSWORD=${dash_pass}|" \
+    -e "s|^WHATSAPP_SWAGGER_PASSWORD=.*|WHATSAPP_SWAGGER_PASSWORD=${swagger_pass}|" \
+    "$ENV_TEMPLATE" > "${dir}/.env"
+
+  if [ -n "$domain" ]; then
+    sed \
+      -e "s|^WAHA_DOMAIN=.*|WAHA_DOMAIN=${domain}|" \
+      -e "s|^WAHA_BASE_URL=.*|WAHA_BASE_URL=https://${domain}|" \
+      "${dir}/.env" > "${dir}/.env.new"
+    mv "${dir}/.env.new" "${dir}/.env"
+  fi
+
+  chmod 600 "${dir}/.env"
+
+  info "Instance '${slug}' dibuat"
+  echo
+  echo "  direktori : ${dir}"
+  echo "  port lokal: 127.0.0.1:${port}"
+  echo "  domain    : ${domain:-BELUM DISET (edit WAHA_DOMAIN & WAHA_BASE_URL di .env)}"
+  echo "  API key   : ${api_key}"
+  echo
+  echo "${BOLD}Langkah berikutnya:${NC}"
+  if [ -z "$domain" ]; then
+    echo "  1. Edit ${dir}/.env -> WAHA_DOMAIN & WAHA_BASE_URL"
+  else
+    echo "  1. Arahkan DNS ${domain} -> IP server ini"
+  fi
+  echo "  2. Set WHATSAPP_HOOK_URL kalau aplikasi bisnis ini mau terima pesan masuk"
+  echo "  3. wahactl up ${slug}"
+  echo "  4. wahactl nginx ${slug}   # render vhost + perintah pemasangannya"
+}
+
+function tunnel_compose() {
+  local dir="${WAHA_HOME}/cloudflared"
+  [ -f "${dir}/docker-compose.yml" ] || die "cloudflared belum terpasang di ${dir}. Jalankan bootstrap.sh lagi."
+  docker compose \
+    --project-name waha-cloudflared \
+    --project-directory "$dir" \
+    --file "${dir}/docker-compose.yml" \
+    "$@"
+}
+
+function cmd_tunnel() {
+  local action="${1:-status}"
+  local dir="${WAHA_HOME}/cloudflared"
+
+  case "$action" in
+  up)
+    local token
+    token="$(sed -n 's/^CLOUDFLARE_TUNNEL_TOKEN=//p' "${dir}/.env" 2>/dev/null | tail -1 || true)"
+    [ -n "$token" ] || die "CLOUDFLARE_TUNNEL_TOKEN masih kosong di ${dir}/.env"
+    ensure_network
+    info "Menjalankan cloudflared"
+    tunnel_compose up -d
+    sleep 5
+    tunnel_compose ps
+    ;;
+  down)
+    tunnel_compose down
+    ;;
+  restart)
+    tunnel_compose restart
+    ;;
+  logs)
+    tunnel_compose logs -f --tail=100
+    ;;
+  status)
+    docker inspect -f 'waha-cloudflared: {{.State.Status}}' waha-cloudflared 2>/dev/null ||
+      echo 'waha-cloudflared: belum jalan'
+    echo "Instance yang bisa dijangkau tunnel (nama service untuk Public Hostname):"
+    local dir2 slug
+    for dir2 in "${INSTANCES_DIR}"/*; do
+      [ -d "$dir2" ] || continue
+      slug="$(basename "$dir2")"
+      echo "  http://waha-${slug}:3000   (domain: $(env_get "$dir2" WAHA_DOMAIN))"
+    done
+    ;;
+  *) die "aksi tunnel tidak dikenal: ${action}. Pilih up|down|restart|logs|status" ;;
+  esac
+}
+
+function cf_available() {
+  [ -f "$CF_ENV_FILE" ] && [ -f "$CF_ROUTE_SCRIPT" ]
+}
+
+function cf_route() {
+  # shellcheck disable=SC1090
+  set -a
+  . "$CF_ENV_FILE"
+  set +a
+  python3 "$CF_ROUTE_SCRIPT" "$@"
+}
+
+# Verifikasi URL publik TANPA lewat resolver sistem.
+# Server ini memakai resolver Oracle VCN yang meng-cache NXDOMAIN selama 30
+# menit (negative TTL zona). Kalau nama baru ditanyakan ke resolver itu tepat
+# setelah record dibuat, hasilnya "tidak ada" dan menempel setengah jam -
+# padahal servisnya sehat. Jadi resolusi diambil dari resolver publik lalu
+# alamatnya disuapkan langsung ke curl.
+function verify_public() {
+  local domain="$1"
+  local ip code tries
+  sleep 10
+  tries=0
+  while [ "$tries" -lt 10 ]; do
+    ip=''
+    if command -v dig >/dev/null; then
+      ip="$(dig +short @1.1.1.1 "$domain" A 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)"
+    fi
+    if [ -n "$ip" ]; then
+      code="$(curl -s -o /dev/null -w '%{http_code}' -m 10 \
+        --resolve "${domain}:443:${ip}" "https://${domain}/ping" 2>/dev/null || true)"
+    else
+      code="$(curl -s -o /dev/null -w '%{http_code}' -m 10 "https://${domain}/ping" 2>/dev/null || true)"
+    fi
+    if [ "$code" = '200' ]; then
+      echo '200'
+      return 0
+    fi
+    sleep 6
+    tries=$((tries + 1))
+  done
+  echo "${code:-000}"
+  return 1
+}
+
+function domain_for() {
+  local slug="$1"
+  local suffix="${WAHA_DOMAIN_SUFFIX:-}"
+  if [ -z "$suffix" ] && [ -f "$CF_ENV_FILE" ]; then
+    suffix="$(sed -n 's/^WAHA_DOMAIN_SUFFIX=//p' "$CF_ENV_FILE" 2>/dev/null | tail -1 || true)"
+  fi
+  [ -n "$suffix" ] || return 1
+  echo "wa-${slug}.${suffix}"
+}
+
+# Onboarding satu pelanggan/bisnis baru: instance + rute publik + verifikasi.
+function cmd_add() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  local domain="${2:-}"
+  if [ -z "$domain" ]; then
+    domain="$(domain_for "$slug")" ||
+      die "WAHA_DOMAIN_SUFFIX belum diset di ${CF_ENV_FILE}. Sebutkan domain manual: wahactl add ${slug} wa-${slug}.contoh.com"
+  fi
+
+  info "1/5 Membuat instance '${slug}' (${domain})"
+  cmd_new "$slug" "$domain" >/dev/null
+
+  info "2/5 Menjalankan container"
+  cmd_up "$slug" >/dev/null
+
+  info "3/5 Menunggu container sehat"
+  local waited=0
+  while [ "$waited" -lt 120 ]; do
+    if [ "$(docker inspect -f '{{.State.Health.Status}}' "waha-${slug}" 2>/dev/null)" = 'healthy' ]; then
+      break
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  [ "$waited" -lt 120 ] || warn "container belum 'healthy' setelah ${waited}s - cek: wahactl logs ${slug}"
+
+  if cf_available; then
+    info "4/5 Membuat rute publik di Cloudflare"
+    cf_route add "$domain" "http://waha-${slug}:3000"
+  else
+    warn "4/5 dilewati: ${CF_ENV_FILE} tidak ada. Tambahkan Public Hostname manual di dashboard tunnel: ${domain} -> http://waha-${slug}:3000"
+  fi
+
+  info "5/5 Verifikasi dari luar"
+  local code
+  code="$(verify_public "$domain")"
+
+  local dir
+  dir="$(instance_dir "$slug")"
+  echo
+  if [ "$code" = '200' ]; then
+    info "SIAP: https://${domain} menjawab (HTTP 200)"
+  else
+    warn "https://${domain}/ping belum menjawab (terakhir: ${code:-tidak ada respons}). Coba lagi beberapa menit; cek juga: wahactl logs ${slug} dan wahactl tunnel logs"
+  fi
+  echo
+  echo "  API URL   : ${BOLD}https://${domain}${NC}"
+  echo "  API key   : $(env_get "$dir" WAHA_API_KEY)"
+  echo "  Dashboard : https://${domain}/dashboard"
+  echo "  User/pass : $(env_get "$dir" WAHA_DASHBOARD_USERNAME) / $(env_get "$dir" WAHA_DASHBOARD_PASSWORD)"
+  echo "  Session   : default (semua request pakai \"session\":\"default\")"
+  echo
+  echo "${BOLD}Langkah terakhir - pasangkan nomor WhatsApp:${NC}"
+  echo "  Buka https://${domain}/dashboard, isi API key, lalu scan QR dari HP"
+  echo "  (Sesuaikan WHATSAPP_HOOK_URL di ${dir}/.env kalau butuh webhook)"
+}
+
+function cmd_nginx() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  require_instance "$slug"
+
+  local template="${WAHA_HOME}/nginx/waha-vhost.conf.template"
+  [ -f "$template" ] || die "template vhost tidak ada: ${template}"
+
+  local dir domain port
+  dir="$(instance_dir "$slug")"
+  domain="$(env_get "$dir" WAHA_DOMAIN)"
+  port="$(env_get "$dir" WAHA_PORT)"
+  [ -n "$domain" ] || die "WAHA_DOMAIN belum diisi di ${dir}/.env"
+  case "$domain" in
+  *CHANGE_ME*) die "WAHA_DOMAIN masih CHANGE_ME di ${dir}/.env" ;;
+  esac
+
+  local out_dir="${WAHA_HOME}/nginx/generated"
+  local out="${out_dir}/waha-${slug}.conf"
+  mkdir -p "$out_dir"
+  sed \
+    -e "s|__SLUG__|${slug}|g" \
+    -e "s|__DOMAIN__|${domain}|g" \
+    -e "s|__PORT__|${port}|g" \
+    "$template" > "$out"
+
+  info "vhost dirender: ${out}"
+  echo
+  echo "${BOLD}Pasang manual (wahactl sengaja tidak menyentuh /etc/nginx):${NC}"
+  echo "  cp ${out} /etc/nginx/sites-available/waha-${slug}.conf"
+  echo "  ln -s ../sites-available/waha-${slug}.conf /etc/nginx/sites-enabled/"
+  echo "  nginx -t && systemctl reload nginx"
+  echo "  certbot --nginx -d ${domain}"
+  echo
+  if command -v nginx >/dev/null && ! grep -rqs 'connection_upgrade' /etc/nginx/; then
+    warn "nginx belum punya 'map \$http_upgrade \$connection_upgrade' di level http{} - WebSocket /ws akan gagal (lihat catatan di template)."
+  fi
+}
+
+function ensure_network() {
+  if docker network inspect "$SHARED_NETWORK" >/dev/null 2>&1; then
+    return 0
+  fi
+  info "Membuat network bersama '${SHARED_NETWORK}'"
+  docker network create "$SHARED_NETWORK" >/dev/null
+}
+
+function cmd_up() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  require_instance "$slug"
+  ensure_network
+  info "Menjalankan waha-${slug}"
+  compose "$slug" up -d
+  compose "$slug" ps
+}
+
+function cmd_down() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  require_instance "$slug"
+  info "Menghentikan waha-${slug} (data sessions/media tetap aman di disk)"
+  compose "$slug" down
+}
+
+function cmd_restart() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  require_instance "$slug"
+  compose "$slug" restart
+}
+
+function cmd_logs() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  require_instance "$slug"
+  shift
+  compose "$slug" logs -f --tail=200 "$@"
+}
+
+function cmd_ls() {
+  printf '%-20s %-8s %-12s %-10s %s\n' INSTANCE PORT ENGINE STATUS SESSION
+  local dir slug port engine status session
+  for dir in "${INSTANCES_DIR}"/*; do
+    [ -d "$dir" ] || continue
+    slug="$(basename "$dir")"
+    port="$(env_get "$dir" WAHA_PORT)"
+    engine="$(env_get "$dir" WHATSAPP_DEFAULT_ENGINE)"
+    status="$(docker inspect -f '{{.State.Status}}' "waha-${slug}" 2>/dev/null || echo '-')"
+    session='-'
+    if [ "$status" = 'running' ]; then
+      session="$(status_of "$slug" || echo '?')"
+    fi
+    printf '%-20s %-8s %-12s %-10s %s\n' \
+      "$slug" "${port:--}" "${engine:--}" "$status" "$session"
+  done
+}
+
+function status_of() {
+  local slug="$1"
+  local dir port key
+  dir="$(instance_dir "$slug")"
+  port="$(env_get "$dir" WAHA_PORT)"
+  key="$(env_get "$dir" WAHA_API_KEY)"
+  curl -fsS -m 5 -H "X-Api-Key: ${key}" \
+    "http://127.0.0.1:${port}/api/sessions/default" 2>/dev/null |
+    sed -n 's/.*"status":"\([A-Z_]*\)".*/\1/p'
+}
+
+function cmd_status() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  require_instance "$slug"
+  status_of "$slug" || die "tidak bisa ambil status. Cek: wahactl logs ${slug}"
+}
+
+function cmd_qr() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  require_instance "$slug"
+  local dir port key
+  dir="$(instance_dir "$slug")"
+  port="$(env_get "$dir" WAHA_PORT)"
+  key="$(env_get "$dir" WAHA_API_KEY)"
+
+  info "Memastikan session 'default' jalan"
+  curl -fsS -m 20 -X POST \
+    -H "X-Api-Key: ${key}" -H 'Content-Type: application/json' \
+    -d '{"name":"default","start":true}' \
+    "http://127.0.0.1:${port}/api/sessions" >/dev/null 2>&1 ||
+    curl -fsS -m 20 -X POST -H "X-Api-Key: ${key}" \
+      "http://127.0.0.1:${port}/api/sessions/default/start" >/dev/null 2>&1 || true
+
+  local out="${dir}/qr.png"
+  info "Mengambil QR (status: $(status_of "$slug" || echo '?'))"
+  curl -fsS -m 30 -H "X-Api-Key: ${key}" \
+    "http://127.0.0.1:${port}/api/default/auth/qr?format=image" -o "$out" ||
+    die "gagal ambil QR. Session mungkin belum SCAN_QR_CODE. Cek: wahactl logs ${slug}"
+
+  local domain login
+  domain="$(env_get "$dir" WAHA_DOMAIN)"
+  login="${SUDO_USER:-$(id -un)}"
+  info "QR disimpan di ${out}"
+  echo "Ambil ke laptop:  scp ${login}@<ip-server>:${out} ."
+  case "$domain" in
+  '' | *CHANGE_ME*) echo "Dashboard: belum ada domain publik untuk instance ini" ;;
+  *) echo "Atau scan lewat dashboard: ${BOLD}https://${domain}/dashboard${NC}" ;;
+  esac
+}
+
+function cmd_rm() {
+  local slug="${1:-}"
+  require_slug "$slug"
+  require_instance "$slug"
+  local dir
+  dir="$(instance_dir "$slug")"
+  echo "${RED}${BOLD}PERINGATAN${NC}: ini menghapus container + data auth WhatsApp instance '${slug}'."
+  echo "Nomor WA-nya harus scan QR ulang. Direktori: ${dir}"
+  printf 'Ketik nama instance untuk konfirmasi: '
+  local answer
+  read -r answer
+  [ "$answer" = "$slug" ] || die "dibatalkan"
+
+  local domain
+  domain="$(env_get "$dir" WAHA_DOMAIN)"
+  compose "$slug" down -v
+  rm -rf "$dir"
+  info "Instance '${slug}' dihapus"
+
+  case "$domain" in
+  '' | *CHANGE_ME*) ;;
+  *)
+    if cf_available; then
+      info "Menghapus rute publik ${domain}"
+      cf_route del "$domain"
+    else
+      warn "Hapus manual di dashboard tunnel: rute ${domain} beserta record DNS-nya"
+    fi
+    ;;
+  esac
+}
+
+function cmd_upgrade() {
+  local flavors
+  if [ "$#" -gt 0 ]; then
+    flavors="$*"
+  else
+    flavors="$(flavors_in_use)"
+    [ -n "$flavors" ] || flavors="$FLAVOR_DEFAULT"
+  fi
+
+  info "Rebuild image lalu recreate semua instance WAHA satu per satu"
+  local flavor
+  for flavor in $flavors; do
+    cmd_build "$flavor"
+  done
+
+  ensure_network
+  local dir slug
+  for dir in "${INSTANCES_DIR}"/*; do
+    [ -d "$dir" ] || continue
+    slug="$(basename "$dir")"
+    info "Recreate waha-${slug}"
+    compose "$slug" up -d
+  done
+  info "Selesai. Image lama bisa dibersihkan dengan: wahactl prune"
+}
+
+function cmd_prune() {
+  # Sengaja TIDAK pakai `docker system prune -a` atau `docker image prune`:
+  # keduanya menghapus image project lain di server ini.
+  info "Menghapus tag versi waha-local lama yang tidak dipakai container mana pun"
+  local in_use ref
+  in_use="$(docker ps -a --format '{{.Image}}' | sort -u)"
+  while read -r ref; do
+    [ -n "$ref" ] || continue
+    # tag bergerak selalu dipertahankan
+    case "$ref" in
+    waha-local:nobrowser | waha-local:browser) continue ;;
+    esac
+    if echo "$in_use" | grep -qx "$ref"; then
+      continue
+    fi
+    info "hapus ${ref}"
+    docker image rm "$ref" >/dev/null || warn "gagal hapus ${ref}"
+  done < <(docker image ls --filter 'reference=waha-local' --format '{{.Repository}}:{{.Tag}}')
+  info "Selesai. Image project lain tidak disentuh."
+}
+
+function cmd_help() {
+  cat <<'EOF'
+wahactl - kelola instance WAHA (1 container = 1 nomor WhatsApp)
+
+  wahactl build [flavor]     Build image dari /opt/waha/src (nice + ionice)
+                             flavor: nobrowser (default, GOWS/NOWEB)
+                                     browser   (WEBJS/WPP, ada Chromium)
+  wahactl add <slug>         SEKALI JALAN untuk pelanggan baru: bikin instance,
+                             jalankan, buat subdomain + rute Cloudflare, verifikasi
+  wahactl new <slug> [domain] [port]
+                             Bikin instance saja (tanpa rute publik)
+  wahactl tunnel <aksi>      Cloudflare Tunnel: up|down|restart|logs|status
+  wahactl nginx <slug>       Render vhost nginx instance + perintah pasangnya
+  wahactl up <slug>          Start instance
+  wahactl down <slug>        Stop instance (data tetap aman)
+  wahactl restart <slug>     Restart instance
+  wahactl logs <slug>        Ikuti log instance
+  wahactl ls                 Daftar semua instance + status session
+  wahactl status <slug>      Status session WhatsApp instance
+  wahactl qr <slug>          Start session 'default' & simpan QR ke qr.png
+  wahactl upgrade [flavor..] Rebuild image + recreate semua instance
+  wahactl rm <slug>          Hapus instance (butuh konfirmasi, data hilang)
+  wahactl prune              Bersihkan image waha-local dangling saja
+
+Semua perintah hanya menyentuh resource berprefix "waha-".
+EOF
+}
+
+command="${1:-help}"
+shift || true
+
+case "$command" in
+build) cmd_build "$@" ;;
+add) cmd_add "$@" ;;
+new) cmd_new "$@" ;;
+tunnel) cmd_tunnel "$@" ;;
+nginx) cmd_nginx "$@" ;;
+up) cmd_up "$@" ;;
+down) cmd_down "$@" ;;
+restart) cmd_restart "$@" ;;
+logs) cmd_logs "$@" ;;
+ls | list) cmd_ls "$@" ;;
+status) cmd_status "$@" ;;
+qr) cmd_qr "$@" ;;
+upgrade) cmd_upgrade "$@" ;;
+rm | remove) cmd_rm "$@" ;;
+prune) cmd_prune "$@" ;;
+help | -h | --help) cmd_help ;;
+*) die "perintah tidak dikenal: ${command}. Lihat: wahactl help" ;;
+esac

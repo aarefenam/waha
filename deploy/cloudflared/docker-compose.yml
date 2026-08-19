@@ -1,0 +1,44 @@
+# Cloudflare Tunnel untuk semua instance WAHA.
+#
+# Dipakai karena port 80/443 di server ini sudah dipegang container AzuraCast:
+# tunnel tidak butuh port terbuka sama sekali, jadi AzuraCast dan app hotel
+# tidak perlu disentuh dan firewall tidak perlu diubah.
+#
+# Cara pakai:
+#   1. Cloudflare Zero Trust -> Networks -> Tunnels -> Create a tunnel
+#      (pilih "Cloudflared", beri nama mis. "waha")
+#   2. Salin token yang muncul ke /opt/waha/cloudflared/.env:
+#        CLOUDFLARE_TUNNEL_TOKEN=eyJ...
+#   3. docker compose -p waha-cloudflared \
+#        --project-directory /opt/waha/cloudflared \
+#        -f /opt/waha/cloudflared/docker-compose.yml up -d
+#   4. Untuk tiap bisnis, tambah Public Hostname di dashboard tunnel:
+#        Subdomain : wa-tokobaju        Domain: domain.com
+#        Service   : HTTP  ->  waha-tokobaju:3000
+#      (nama host "waha-<slug>" adalah alias container di network waha-net)
+#
+# Catatan: WebSocket (/ws) jalan otomatis lewat tunnel, tidak perlu setting
+# tambahan. Untuk upload media besar, tidak ada batas ukuran dari cloudflared;
+# batas Cloudflare (100MB di plan Free) yang berlaku.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: waha-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - waha-net
+    mem_limit: 256m
+    cpus: 0.5
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '20m'
+        max-file: '3'
+
+networks:
+  waha-net:
+    external: true
+    name: waha-net

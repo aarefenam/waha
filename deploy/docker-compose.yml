@@ -1,0 +1,76 @@
+# WAHA - satu container = satu nomor WhatsApp (satu bisnis)
+#
+# File ini dipakai bersama oleh SEMUA instance. Yang membedakan tiap instance
+# adalah direktori + file .env di /opt/waha/instances/<slug>/.env
+#
+# Dijalankan lewat ./wahactl, atau manual:
+#   docker compose -p waha-<slug> \
+#     --project-directory /opt/waha/instances/<slug> \
+#     -f /opt/waha/docker-compose.yml up -d
+services:
+  waha:
+    image: ${WAHA_IMAGE:-waha-local:nobrowser}
+    container_name: waha-${WAHA_INSTANCE}
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      # Image default-nya 16GB heap. Di server bersama itu berbahaya:
+      # satu instance bisa habisin RAM server dan mematikan project lain.
+      NODE_OPTIONS: '--max-old-space-size=${WAHA_NODE_HEAP_MB:-1024}'
+
+    # Hanya listen di localhost (untuk debug & wahactl dari server itu sendiri).
+    # Penting: port yang di-publish Docker MENEMBUS ufw/firewall,
+    # jadi binding ke 127.0.0.1 ini bagian dari pengamanan, bukan opsional.
+    ports:
+      - '127.0.0.1:${WAHA_PORT}:3000/tcp'
+
+    networks:
+      # network bawaan project compose ini (terisolasi per instance)
+      default: {}
+      # network bersama khusus WAHA, dipakai reverse proxy / cloudflared
+      # untuk menjangkau instance ini sebagai http://waha-<slug>:3000
+      waha-net:
+        aliases:
+          - 'waha-${WAHA_INSTANCE}'
+
+    volumes:
+      # Data auth WhatsApp (jangan sampai kepakai bareng instance lain)
+      - './sessions:/app/.sessions'
+      # File media
+      - './media:/app/.media'
+
+    # Kalau resolve web.whatsapp.com bermasalah
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+
+    # Chromium (engine WEBJS) butuh /dev/shm besar, default 64MB bikin crash
+    shm_size: ${WAHA_SHM_SIZE:-1gb}
+
+    # Batas resource per instance - ini pagar utama supaya project lain aman
+    mem_limit: ${WAHA_MEM_LIMIT:-2g}
+    cpus: ${WAHA_CPUS:-1.0}
+
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '50m'
+        max-file: '5'
+
+    healthcheck:
+      # /ping tidak butuh API key, /health butuh
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:3000/ping']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+networks:
+  # Dibuat sekali oleh `wahactl up` kalau belum ada. Hanya berisi container
+  # WAHA + cloudflared - tidak ada kaitan dengan network project lain.
+  waha-net:
+    external: true
+    name: waha-net
