@@ -461,7 +461,12 @@ function cmd_restart() {
   local slug="${1:-}"
   require_slug "$slug"
   require_instance "$slug"
-  compose "$slug" restart
+  ensure_network
+  # Sengaja bukan `compose restart`: perintah itu TIDAK membaca ulang env_file,
+  # jadi perubahan di .env instance tidak pernah sampai ke container. Recreate
+  # membaca ulang seluruh konfigurasi; data auth WhatsApp aman di volume.
+  info "Menjalankan ulang waha-${slug} (konfigurasi .env ikut dimuat ulang)"
+  compose "$slug" up -d --force-recreate
 }
 
 function cmd_logs() {
