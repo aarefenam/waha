@@ -171,8 +171,11 @@ function ensure_builder() {
 }
 
 function flavors_in_use() {
+  # `tr -d '[:blank:]'`, bukan '[:space:]': [:space:] ikut menghapus newline,
+  # sehingga daftar flavor dari beberapa instance menyatu jadi satu baris
+  # ("nobrowsernobrowser...") dan `sort -u` tidak bisa lagi memisahkannya.
   grep -hs '^WAHA_IMAGE=' "${INSTANCES_DIR}"/*/.env 2>/dev/null |
-    cut -d= -f2 | cut -d: -f2 | tr -d '[:space:]' | sort -u || true
+    cut -d= -f2 | cut -d: -f2 | tr -d '[:blank:]\r' | sort -u || true
 }
 
 function cmd_new() {
