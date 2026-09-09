@@ -1,0 +1,19 @@
+[Unit]
+Description=Update WAHA dari GitHub lalu deploy ulang instance
+Documentation=https://github.com/aarefenam/waha/blob/core/deploy/README.md
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Ganti ke "--check" kalau hanya ingin diberi tahu, tanpa deploy otomatis.
+ExecStart=/usr/local/bin/wahactl selfupdate
+# Build image berat. Nilai ini menjaga project lain di server (AzuraCast, app
+# hotel) tetap responsif selama update berjalan.
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=120%
+TimeoutStartSec=3600
+
+[Install]
+WantedBy=multi-user.target

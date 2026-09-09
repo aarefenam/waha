@@ -300,6 +300,79 @@ wahactl prune               # hapus tag versi waha-local lama yang tak terpakai
 wahactl rm tokobaju         # hapus instance (butuh konfirmasi, harus scan ulang)
 ```
 
+### Update dari project asli (upstream)
+
+Fork ini tidak pernah ikut berubah sendiri ketika `devlikeapro/waha` merilis
+perbaikan. Update berjalan dua tahap, dan keduanya bisa otomatis.
+
+**Tahap 1 — fork disinkronkan di GitHub.**
+[`.github/workflows/sync-upstream.yml`](../.github/workflows/sync-upstream.yml)
+berjalan tiap hari 02:00 WIB: `core` di-fast-forward dari `upstream/core`, lalu
+branch deploy di-merge dari `core`. Kalau gagal (mis. konflik), workflow membuka
+issue supaya tidak lewat diam-diam.
+
+Aturan yang menjaganya tetap mulus: **jangan pernah commit ke `core`.** Branch
+itu cerminan murni upstream. Semua perkakas dan penyesuaian sendiri hidup di
+branch deploy. Tag upstream sengaja tidak ditarik, karena `build.yaml` berjalan
+`on: push: tags` dan akan memicu build Docker matrix yang berat.
+
+Dua catatan GitHub: scheduled workflow di fork dinonaktifkan otomatis setelah 60
+hari tanpa aktivitas repo (jalankan manual lewat tab Actions untuk
+menghidupkannya lagi), dan Actions perlu diaktifkan sekali di tab Actions.
+
+**Tahap 2 — server menarik dan men-deploy.**
+
+```bash
+wahactl selfupdate --check   # cuma lapor ada berapa commit baru
+wahactl selfupdate           # tarik, build, deploy, verifikasi, rollback bila rusak
+```
+
+`selfupdate` sengaja berbeda dari `upgrade`: `upgrade` hanya membangun ulang
+image dari source yang sudah ada, sedangkan `selfupdate` menarik commit baru
+dulu. Urutannya: catat session yang sedang `WORKING`, `git merge --ff-only`,
+build tiap flavor yang dipakai, lalu deploy instance satu per satu. Setiap
+instance ditunggu sampai container `healthy`; instance yang tadinya `WORKING`
+juga harus kembali `WORKING`. Kalau tidak, image dikembalikan ke tag versi lama
+(`waha-local:<flavor>-<sha>`) dan instance itu dijalankan ulang. Instance yang
+memang sudah `FAILED` sebelum update tidak dipakai sebagai patokan, supaya
+nomor yang belum discan tidak memicu rollback palsu.
+
+Karena rollback bergantung pada tag versi lama, jalankan `wahactl prune` hanya
+setelah update terbukti stabil.
+
+Jadwalkan lewat systemd (unit ada di [systemd/](systemd/)):
+
+```bash
+sudo install -m 644 /opt/waha/src/deploy/systemd/waha-selfupdate.* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now waha-selfupdate.timer
+systemctl list-timers waha-selfupdate.timer
+```
+
+Default: tiap Minggu 03:00 WIB. Kalau lebih suka diberi tahu dulu dan deploy
+sendiri, ubah `ExecStart` di service jadi `wahactl selfupdate --check`.
+
+**Notifikasi WhatsApp (opsional).** `selfupdate` bisa mengabari hasilnya lewat
+salah satu instance WAHA milik sendiri. Buat `/opt/waha/notify.env`:
+
+```bash
+WAHA_NOTIFY_URL=https://wa-<slug>.<domain>
+WAHA_NOTIFY_KEY=<API key instance itu>
+WAHA_NOTIFY_CHATID=628xxxxxxxxxx@c.us
+```
+
+Tanpa file itu update tetap berjalan, hanya senyap. Pakai instance yang bukan
+nomor pelanggan, supaya notifikasi teknis tidak masuk ke chat bisnis.
+
+**Syarat.** `/opt/waha/src` harus berupa clone git, bukan hasil `rsync` —
+`selfupdate` menolak jalan kalau bukan repo. Kalau source di server dikirim
+lewat rsync, ganti sekali:
+
+```bash
+sudo rm -rf /opt/waha/src
+sudo git clone -b <branch-deploy> https://github.com/aarefenam/waha /opt/waha/src
+```
+
 ### Backup
 
 Yang wajib di-backup adalah folder auth session — kalau hilang, semua nomor

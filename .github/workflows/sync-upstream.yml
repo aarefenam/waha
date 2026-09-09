@@ -1,0 +1,146 @@
+name: Sync upstream
+
+# Menjaga fork ini tetap sinkron dengan project asli devlikeapro/waha.
+#
+# Alur:
+#   1. `core` di-fast-forward dari `upstream/core`. Branch ini dijaga tetap
+#      cerminan murni upstream — jangan pernah commit ke sini.
+#   2. Branch deploy (berisi perkakas `deploy/`) di-merge dari `core`, supaya
+#      server hanya perlu menarik satu branch untuk dapat update upstream
+#      sekaligus update wahactl.
+#   3. Kalau salah satu langkah gagal (mis. konflik), workflow membuka issue
+#      supaya update tidak lewat diam-diam.
+#
+# Tag upstream sengaja TIDAK ikut ditarik: .github/workflows/build.yaml
+# berjalan `on: push: tags`, jadi menarik tag akan memicu build Docker matrix
+# yang berat di fork ini tanpa alasan.
+
+on:
+  schedule:
+    # 19:00 UTC = 02:00 WIB
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://github.com/devlikeapro/waha
+  MIRROR_BRANCH: core
+  DEPLOY_BRANCH: docs/manual-waha
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch --no-tags upstream "$MIRROR_BRANCH"
+
+      - name: Fast-forward mirror branch
+        id: mirror
+        run: |
+          behind=$(git rev-list --count "origin/${MIRROR_BRANCH}..upstream/${MIRROR_BRANCH}")
+          ahead=$(git rev-list --count "upstream/${MIRROR_BRANCH}..origin/${MIRROR_BRANCH}")
+          echo "behind=${behind}" >>"$GITHUB_OUTPUT"
+
+          if [ "$ahead" -ne 0 ]; then
+            echo "::error::${MIRROR_BRANCH} punya ${ahead} commit sendiri, tidak bisa fast-forward. Pindahkan commit itu ke ${DEPLOY_BRANCH}."
+            exit 1
+          fi
+
+          if [ "$behind" -eq 0 ]; then
+            echo "Sudah terbaru, tidak ada commit baru dari upstream."
+            exit 0
+          fi
+
+          echo "Menarik ${behind} commit baru ke ${MIRROR_BRANCH}."
+          git log --oneline "origin/${MIRROR_BRANCH}..upstream/${MIRROR_BRANCH}" >/tmp/new-commits.txt
+          git push origin "upstream/${MIRROR_BRANCH}:refs/heads/${MIRROR_BRANCH}"
+
+      - name: Merge mirror into deploy branch
+        if: steps.mirror.outputs.behind != '0'
+        run: |
+          git fetch origin "$MIRROR_BRANCH" "$DEPLOY_BRANCH"
+          git checkout -B "$DEPLOY_BRANCH" "origin/${DEPLOY_BRANCH}"
+          git merge --no-edit "origin/${MIRROR_BRANCH}"
+          git push origin "$DEPLOY_BRANCH"
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Sync upstream"
+            echo
+            echo "- Commit baru dari upstream: **${{ steps.mirror.outputs.behind || '0' }}**"
+            echo "- Status: ${{ job.status }}"
+            if [ -s /tmp/new-commits.txt ]; then
+              echo
+              echo '<details><summary>Commit yang ditarik</summary>'
+              echo
+              echo '```'
+              cat /tmp/new-commits.txt
+              echo '```'
+              echo
+              echo '</details>'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Open issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Sync upstream gagal';
+            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              'The scheduled upstream sync failed, so this fork is no longer tracking devlikeapro/waha.',
+              '',
+              `Run log: ${url}`,
+              '',
+              'Common causes:',
+              '- A commit landed directly on the mirror branch, which blocks the fast-forward.',
+              '- The merge into the deploy branch hit a conflict and needs a manual merge.',
+              '',
+              'The server keeps running the currently deployed version until this is resolved.',
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'sync-upstream',
+            });
+
+            if (existing.data.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['sync-upstream'],
+            });

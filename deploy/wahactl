@@ -28,6 +28,13 @@ SHARED_NETWORK="${WAHA_SHARED_NETWORK:-waha-net}"
 # Isi lihat cf-api.env.example. Tanpa file ini, rute dibuat manual lewat dashboard.
 CF_ENV_FILE="${WAHA_CF_ENV:-${WAHA_HOME}/cloudflared/cf-api.env}"
 CF_ROUTE_SCRIPT="${WAHA_HOME}/cf-route.py"
+# Notifikasi hasil `wahactl selfupdate` lewat WhatsApp, memakai salah satu
+# instance sendiri. Opsional - tanpa file ini update tetap jalan, cuma senyap.
+NOTIFY_ENV_FILE="${WAHA_NOTIFY_ENV:-${WAHA_HOME}/notify.env}"
+# Snapshot data auth sebelum `selfupdate`. Satu arsip bisa ratusan MB karena
+# gows.db memuat riwayat chat, jadi jumlah yang disimpan sengaja sedikit.
+BACKUP_DIR="${WAHA_BACKUP_DIR:-${WAHA_HOME}/backups}"
+BACKUP_KEEP="${WAHA_BACKUP_KEEP:-3}"
 
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -605,6 +612,240 @@ function cmd_upgrade() {
   info "Selesai. Image lama bisa dibersihkan dengan: wahactl prune"
 }
 
+# Kirim notifikasi lewat salah satu instance WAHA milik sendiri. Opsional:
+# tanpa /opt/waha/notify.env fungsi ini diam saja dan tidak pernah menggagalkan
+# update. Isi notify.env: WAHA_NOTIFY_URL, WAHA_NOTIFY_KEY, WAHA_NOTIFY_CHATID.
+function notify() {
+  local text="$1"
+  [ -f "$NOTIFY_ENV_FILE" ] || return 0
+
+  local WAHA_NOTIFY_URL='' WAHA_NOTIFY_KEY='' WAHA_NOTIFY_CHATID=''
+  # shellcheck disable=SC1090
+  . "$NOTIFY_ENV_FILE"
+  if [ -z "$WAHA_NOTIFY_URL" ] || [ -z "$WAHA_NOTIFY_KEY" ] || [ -z "$WAHA_NOTIFY_CHATID" ]; then
+    warn "notify.env tidak lengkap - notifikasi dilewati"
+    return 0
+  fi
+
+  local payload
+  payload="$(printf '%s' "$text" | python3 -c 'import json,sys; print(json.dumps({"session":"default","chatId":sys.argv[1],"text":sys.stdin.read()}))' "$WAHA_NOTIFY_CHATID")" || return 0
+  curl -fsS -m 20 -X POST "${WAHA_NOTIFY_URL%/}/api/sendText" \
+    -H "X-Api-Key: ${WAHA_NOTIFY_KEY}" \
+    -H 'Content-Type: application/json' \
+    -d "$payload" >/dev/null 2>&1 ||
+    warn "notifikasi WhatsApp gagal dikirim"
+}
+
+function src_branch() {
+  git -C "$SRC_DIR" rev-parse --abbrev-ref HEAD
+}
+
+# Snapshot data auth satu instance. Ini yang membuat update tanpa pengawasan
+# aman: rollback image saja tidak menolong kalau versi baru mengubah format
+# penyimpanan session - nomor akan minta scan QR ulang.
+#
+# WAJIB dipanggil saat container instance itu sedang mati. gows.db adalah
+# SQLite dengan WAL aktif; mengarsipnya sambil ditulis bisa menghasilkan
+# salinan robek yang justru tidak bisa dipakai memulihkan.
+#
+# Folder media sengaja dilewati: besar, dan tidak pernah jadi penyebab session
+# rusak. Mencetak path arsip ke stdout.
+function backup_instance() {
+  local slug="$1" label="$2"
+  local file="${BACKUP_DIR}/pre-update-${slug}-${label}-$(date +%Y%m%d-%H%M%S).tar.gz"
+  mkdir -p "$BACKUP_DIR"
+
+  tar czf "$file" -C "$WAHA_HOME" "instances/${slug}/sessions" ||
+    die "backup data session ${slug} gagal - update dibatalkan"
+
+  # Sisakan beberapa arsip terbaru per instance supaya disk tidak diam-diam penuh.
+  local old
+  old="$(ls -1t "${BACKUP_DIR}/pre-update-${slug}-"*.tar.gz 2>/dev/null | tail -n "+$((BACKUP_KEEP + 1))" || true)"
+  [ -n "$old" ] && echo "$old" | xargs -r rm -f
+
+  echo "$file"
+}
+
+# Kembalikan data auth satu instance dari arsip. Container harus mati dulu,
+# kalau tidak proses yang jalan bisa menulis ulang file yang baru dipulihkan.
+function restore_instance_data() {
+  local slug="$1" archive="$2"
+  [ -f "$archive" ] || return 1
+
+  compose "$slug" down >/dev/null 2>&1 || true
+  rm -rf "${INSTANCES_DIR}/${slug}/sessions"
+  tar xzf "$archive" -C "$WAHA_HOME" "instances/${slug}/sessions" 2>/dev/null ||
+    warn "arsip tidak memuat sessions/ untuk ${slug} - lanjut dengan data yang ada"
+  return 0
+}
+
+# Berapa commit baru yang menunggu di remote untuk branch yang sedang dipakai.
+function src_behind() {
+  local branch="$1"
+  git -C "$SRC_DIR" fetch --no-tags --quiet origin "$branch"
+  git -C "$SRC_DIR" rev-list --count "HEAD..origin/${branch}"
+}
+
+# Update source dari GitHub lalu deploy ulang, dengan verifikasi & rollback.
+#
+#   wahactl selfupdate --check   hanya lapor ada/tidaknya update (exit 0 = ada)
+#   wahactl selfupdate           tarik, build, deploy, verifikasi, rollback bila rusak
+#
+# Rollback memakai tag versi yang dibuat `cmd_build` (waha-local:<flavor>-<sha>),
+# jadi versi lama selalu masih ada selama `wahactl prune` belum dijalankan.
+function cmd_selfupdate() {
+  [ -d "${SRC_DIR}/.git" ] || die "${SRC_DIR} bukan git repo. Update otomatis butuh clone git, bukan hasil rsync."
+
+  local check_only='false'
+  [ "${1:-}" = '--check' ] && check_only='true'
+
+  local branch behind
+  branch="$(src_branch)"
+  [ "$branch" != 'HEAD' ] || die "source dalam detached HEAD. Checkout branch dulu: git -C ${SRC_DIR} checkout core"
+  behind="$(src_behind "$branch")"
+
+  if [ "$behind" -eq 0 ]; then
+    info "Sudah terbaru (branch ${branch}). Tidak ada yang perlu di-deploy."
+    return 1
+  fi
+
+  info "Ada ${behind} commit baru di origin/${branch}:"
+  git -C "$SRC_DIR" log --oneline "HEAD..origin/${branch}" | head -30
+
+  if [ "$check_only" = 'true' ]; then
+    notify "WAHA: ada ${behind} commit baru di origin/${branch}. Jalankan: sudo wahactl selfupdate"
+    return 0
+  fi
+
+  git -C "$SRC_DIR" diff --quiet ||
+    die "ada perubahan lokal yang belum di-commit di ${SRC_DIR}. Bereskan dulu supaya update tidak menimpanya."
+
+  local old_sha flavors flavor
+  old_sha="$(git -C "$SRC_DIR" rev-parse --short HEAD)"
+  flavors="$(flavors_in_use)"
+  [ -n "$flavors" ] || flavors="$FLAVOR_DEFAULT"
+
+  # Rekam session yang sekarang WORKING. Hanya session yang tadinya WORKING
+  # lalu rusak sesudah deploy yang dianggap regresi - instance yang memang
+  # sudah FAILED sejak awal tidak boleh memicu rollback.
+  local dir slug
+  local -A before=()
+  for dir in "${INSTANCES_DIR}"/*; do
+    [ -d "$dir" ] || continue
+    slug="$(basename "$dir")"
+    before["$slug"]="$(status_of "$slug" 2>/dev/null || echo '?')"
+  done
+
+  info "Menarik update (${old_sha} -> origin/${branch})"
+  git -C "$SRC_DIR" merge --ff-only "origin/${branch}" ||
+    die "tidak bisa fast-forward. Selesaikan manual di ${SRC_DIR}."
+
+  local new_sha
+  new_sha="$(git -C "$SRC_DIR" rev-parse --short HEAD)"
+
+  for flavor in $flavors; do
+    if ! cmd_build "$flavor"; then
+      warn "build ${flavor} gagal - source dikembalikan ke ${old_sha}, container tidak disentuh"
+      git -C "$SRC_DIR" reset --hard "$old_sha" >/dev/null
+      notify "WAHA update GAGAL saat build (${flavor}). Container masih jalan di versi lama ${old_sha}."
+      die "build gagal"
+    fi
+  done
+
+  ensure_network
+  local broken='' recovered='' failed_rollback='' archive=''
+  for dir in "${INSTANCES_DIR}"/*; do
+    [ -d "$dir" ] || continue
+    slug="$(basename "$dir")"
+
+    # Matikan dulu, baru snapshot: SQLite hanya konsisten setelah proses
+    # penulisnya berhenti. Instance lain tetap melayani selama ini.
+    info "Deploy waha-${slug}"
+    compose "$slug" down >/dev/null 2>&1 || true
+    archive="$(backup_instance "$slug" "$old_sha")"
+    info "  snapshot data auth: $(du -h "$archive" | cut -f1)"
+    compose "$slug" up -d
+
+    if wait_session_ok "$slug" "${before[$slug]:-?}"; then
+      continue
+    fi
+
+    broken="${broken} ${slug}"
+    warn "waha-${slug} rusak setelah update (sebelumnya ${before[$slug]:-?}). Rollback ke ${old_sha}."
+    if rollback_instance "$slug" "$old_sha" "$archive" && wait_session_ok "$slug" "${before[$slug]:-?}"; then
+      recovered="${recovered} ${slug}"
+    else
+      failed_rollback="${failed_rollback} ${slug}"
+    fi
+  done
+
+  echo
+  if [ -z "$broken" ]; then
+    info "Update selesai: ${old_sha} -> ${new_sha}. Semua instance sehat."
+    notify "WAHA ter-update: ${old_sha} -> ${new_sha} (${behind} commit). Semua instance sehat."
+    return 0
+  fi
+
+  warn "Instance bermasalah setelah update:${broken}"
+  [ -n "$recovered" ] && info "Berhasil di-rollback ke versi lama:${recovered}"
+  if [ -n "$failed_rollback" ]; then
+    warn "Rollback TIDAK menolong:${failed_rollback} - perlu diperiksa manual (wahactl logs <slug>)"
+  fi
+  notify "WAHA update ${old_sha} -> ${new_sha} bermasalah. Rusak:${broken}. Rollback OK:${recovered:- -}. Perlu dicek manual:${failed_rollback:- -}"
+  return 1
+}
+
+# Tunggu container sehat, lalu pastikan session tidak turun kelas dari WORKING.
+function wait_session_ok() {
+  local slug="$1" previous="$2"
+  local waited=0 health status
+
+  while [ "$waited" -lt 120 ]; do
+    health="$(docker inspect -f '{{.State.Health.Status}}' "waha-${slug}" 2>/dev/null || echo 'none')"
+    [ "$health" = 'healthy' ] && break
+    sleep 5
+    waited=$((waited + 5))
+  done
+  [ "$health" = 'healthy' ] || return 1
+
+  # Session yang sebelumnya tidak WORKING tidak dipakai sebagai patokan.
+  [ "$previous" = 'WORKING' ] || return 0
+
+  waited=0
+  while [ "$waited" -lt 90 ]; do
+    status="$(status_of "$slug" 2>/dev/null || echo '?')"
+    [ "$status" = 'WORKING' ] && return 0
+    sleep 10
+    waited=$((waited + 10))
+  done
+  return 1
+}
+
+function rollback_instance() {
+  local slug="$1" old_sha="$2" archive="${3:-}"
+  local dir image flavor previous
+  dir="$(instance_dir "$slug")"
+  image="$(env_get "$dir" WAHA_IMAGE)"
+  flavor="${image##*:}"
+  previous="waha-local:${flavor}-${old_sha}"
+
+  if ! docker image inspect "$previous" >/dev/null 2>&1; then
+    warn "image versi lama ${previous} tidak ada - rollback ${slug} tidak bisa otomatis"
+    return 1
+  fi
+
+  # Urutannya penting: matikan container dan pulihkan data auth dulu, baru
+  # kembalikan image. Kalau image dikembalikan sementara container versi baru
+  # masih hidup, proses lama bisa menimpa data yang baru dipulihkan.
+  if [ -n "$archive" ]; then
+    restore_instance_data "$slug" "$archive" ||
+      warn "data auth ${slug} tidak bisa dipulihkan dari ${archive}"
+  fi
+
+  docker tag "$previous" "waha-local:${flavor}"
+  compose "$slug" up -d --force-recreate
+}
+
 function cmd_prune() {
   # Sengaja TIDAK pakai `docker system prune -a` atau `docker image prune`:
   # keduanya menghapus image project lain di server ini.
@@ -647,6 +888,9 @@ wahactl - kelola instance WAHA (1 container = 1 nomor WhatsApp)
   wahactl status <slug>      Status session WhatsApp instance
   wahactl qr <slug>          Start session 'default' & simpan QR ke qr.png
   wahactl upgrade [flavor..] Rebuild image + recreate semua instance
+  wahactl selfupdate         Tarik commit baru dari GitHub, build, deploy,
+                             verifikasi tiap instance, rollback bila rusak
+  wahactl selfupdate --check Cuma lapor ada/tidaknya update (tidak deploy)
   wahactl rm <slug>          Hapus instance (butuh konfirmasi, data hilang)
   wahactl prune              Bersihkan image waha-local dangling saja
 
@@ -671,6 +915,7 @@ ls | list) cmd_ls "$@" ;;
 status) cmd_status "$@" ;;
 qr) cmd_qr "$@" ;;
 upgrade) cmd_upgrade "$@" ;;
+selfupdate) cmd_selfupdate "$@" ;;
 rm | remove) cmd_rm "$@" ;;
 prune) cmd_prune "$@" ;;
 help | -h | --help) cmd_help ;;

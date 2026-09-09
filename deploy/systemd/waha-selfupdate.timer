@@ -1,0 +1,12 @@
+[Unit]
+Description=Jadwal update WAHA mingguan
+
+[Timer]
+# Minggu 03:00 WIB - jam paling sepi untuk semua bisnis.
+OnCalendar=Sun *-*-* 03:00:00
+Persistent=true
+# Sebar acak sampai 30 menit supaya build tidak selalu jatuh di detik yang sama.
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target
