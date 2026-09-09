@@ -631,12 +631,31 @@ function notify() {
   fi
 
   local payload
-  payload="$(printf '%s' "$text" | python3 -c 'import json,sys; print(json.dumps({"session":"default","chatId":sys.argv[1],"text":sys.stdin.read()}))' "$WAHA_NOTIFY_CHATID")" || return 0
-  curl -fsS -m 20 -X POST "${WAHA_NOTIFY_URL%/}/api/sendText" \
+  if ! payload="$(printf '%s' "$text" |
+    python3 -c 'import json,sys; print(json.dumps({"session":"default","chatId":sys.argv[1],"text":sys.stdin.read()}))' \
+      "$WAHA_NOTIFY_CHATID")"; then
+    warn "notifikasi dilewati - gagal menyusun payload JSON"
+    return 0
+  fi
+
+  # Kode HTTP diperiksa dan dilaporkan. Versi sebelumnya membuang seluruh
+  # keluaran curl, jadi notifikasi yang ditolak (API key salah, session tidak
+  # WORKING, nomor keliru) lolos tanpa jejak - dan notifikasi yang gagal
+  # diam-diam sama tidak bergunanya dengan tidak ada notifikasi.
+  local code
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -m 20 \
+    -X POST "${WAHA_NOTIFY_URL%/}/api/sendText" \
     -H "X-Api-Key: ${WAHA_NOTIFY_KEY}" \
     -H 'Content-Type: application/json' \
-    -d "$payload" >/dev/null 2>&1 ||
-    warn "notifikasi WhatsApp gagal dikirim"
+    -d "$payload" 2>/dev/null)" || code='000'
+
+  case "$code" in
+  2*) return 0 ;;
+  000) warn "notifikasi WhatsApp gagal: tidak ada respons dari ${WAHA_NOTIFY_URL}" ;;
+  401 | 403) warn "notifikasi WhatsApp ditolak (HTTP ${code}) - periksa WAHA_NOTIFY_KEY di ${NOTIFY_ENV_FILE}" ;;
+  *) warn "notifikasi WhatsApp gagal (HTTP ${code}) - session pengirim mungkin tidak WORKING" ;;
+  esac
+  return 0
 }
 
 # Build cache buildkit tumbuh tiap build dan tidak pernah menyusut sendiri.
