@@ -316,8 +316,19 @@ itu cerminan murni upstream. Semua perkakas dan penyesuaian sendiri hidup di
 branch deploy. Tag upstream sengaja tidak ditarik, karena `build.yaml` berjalan
 `on: push: tags` dan akan memicu build Docker matrix yang berat.
 
-Dua catatan GitHub: scheduled workflow di fork dinonaktifkan otomatis setelah 60
-hari tanpa aktivitas repo (jalankan manual lewat tab Actions untuk
+**Default branch repo harus branch deploy, bukan `core`.** GitHub hanya
+menjalankan scheduled workflow dari default branch. Selama default masih `core`,
+workflow ini tidak terdaftar sama sekali dan jadwal hariannya tidak pernah
+menyala — tanpa pesan error apa pun, walaupun filenya sudah ter-push. Menaruh
+workflow di `core` bukan jalan keluar, karena itu merusak kemurnian branch
+cerminan. Jadi:
+
+```bash
+gh repo edit <owner>/waha --default-branch <branch-deploy>
+```
+
+Dua catatan GitHub lain: scheduled workflow di fork dinonaktifkan otomatis
+setelah 60 hari tanpa aktivitas repo (jalankan manual lewat tab Actions untuk
 menghidupkannya lagi), dan Actions perlu diaktifkan sekali di tab Actions.
 
 **Tahap 2 — server menarik dan men-deploy.**
