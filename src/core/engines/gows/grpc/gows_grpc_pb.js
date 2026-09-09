@@ -697,6 +697,17 @@ function deserialize_messages_UpdateParticipantsRequest(buffer_arg) {
   return gows_pb.UpdateParticipantsRequest.deserializeBinary(new Uint8Array(buffer_arg));
 }
 
+function serialize_messages_UpdateRequestParticipantsRequest(arg) {
+  if (!(arg instanceof gows_pb.UpdateRequestParticipantsRequest)) {
+    throw new Error('Expected argument of type messages.UpdateRequestParticipantsRequest');
+  }
+  return Buffer.from(arg.serializeBinary());
+}
+
+function deserialize_messages_UpdateRequestParticipantsRequest(buffer_arg) {
+  return gows_pb.UpdateRequestParticipantsRequest.deserializeBinary(new Uint8Array(buffer_arg));
+}
+
 function serialize_messages_UpsertLabelRequest(arg) {
   if (!(arg instanceof gows_pb.UpsertLabelRequest)) {
     throw new Error('Expected argument of type messages.UpsertLabelRequest');
@@ -1070,6 +1081,39 @@ updateGroupParticipants: {
     responseType: gows_pb.JsonList,
     requestSerialize: serialize_messages_UpdateParticipantsRequest,
     requestDeserialize: deserialize_messages_UpdateParticipantsRequest,
+    responseSerialize: serialize_messages_JsonList,
+    responseDeserialize: deserialize_messages_JsonList,
+  },
+  setGroupJoinApprovalMode: {
+    path: '/messages.MessageService/SetGroupJoinApprovalMode',
+    requestStream: false,
+    responseStream: false,
+    requestType: gows_pb.JidBoolRequest,
+    responseType: gows_pb.Empty,
+    requestSerialize: serialize_messages_JidBoolRequest,
+    requestDeserialize: deserialize_messages_JidBoolRequest,
+    responseSerialize: serialize_messages_Empty,
+    responseDeserialize: deserialize_messages_Empty,
+  },
+  getGroupRequestParticipants: {
+    path: '/messages.MessageService/GetGroupRequestParticipants',
+    requestStream: false,
+    responseStream: false,
+    requestType: gows_pb.JidRequest,
+    responseType: gows_pb.JsonList,
+    requestSerialize: serialize_messages_JidRequest,
+    requestDeserialize: deserialize_messages_JidRequest,
+    responseSerialize: serialize_messages_JsonList,
+    responseDeserialize: deserialize_messages_JsonList,
+  },
+  updateGroupRequestParticipants: {
+    path: '/messages.MessageService/UpdateGroupRequestParticipants',
+    requestStream: false,
+    responseStream: false,
+    requestType: gows_pb.UpdateRequestParticipantsRequest,
+    responseType: gows_pb.JsonList,
+    requestSerialize: serialize_messages_UpdateRequestParticipantsRequest,
+    requestDeserialize: deserialize_messages_UpdateRequestParticipantsRequest,
     responseSerialize: serialize_messages_JsonList,
     responseDeserialize: deserialize_messages_JsonList,
   },

@@ -584,3 +584,28 @@ export class SessionUpdateRequest {
   @IsOptional()
   apps?: App[] | null;
 }
+
+export class SessionLogoutAppsOptions {
+  @ApiProperty({
+    description:
+      "Purge the session apps' storage (messages, caches) as part of logout.",
+    required: false,
+    default: false,
+    example: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  purge?: boolean;
+}
+
+export class SessionLogoutRequest {
+  @ApiProperty({
+    description: 'Options for the session apps during logout.',
+    required: false,
+    type: SessionLogoutAppsOptions,
+  })
+  @ValidateNested()
+  @Type(() => SessionLogoutAppsOptions)
+  @IsOptional()
+  apps?: SessionLogoutAppsOptions;
+}

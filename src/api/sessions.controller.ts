@@ -41,6 +41,7 @@ import {
   SessionExpand,
   SessionInfo,
   SessionInfoQuery,
+  SessionLogoutRequest,
   SessionUpdateRequest,
 } from '../structures/sessions.dto';
 import { SessionExamples } from './sessions.examples';
@@ -203,10 +204,14 @@ class SessionsController {
     summary: 'Logout from the session',
     description: 'Logout the session, restart a session if it was not STOPPED',
   })
+  @ApiBody({ type: SessionLogoutRequest, required: false })
   @CheckPolicies(CanSession(Action.Control, FromParam('session')))
   @UsePipes(new WAHAValidationPipe())
-  async logout(@Param('session') name: string): Promise<SessionDTO> {
-    return this.sessionService.logoutSession(name);
+  async logout(
+    @Param('session') name: string,
+    @Body() request?: SessionLogoutRequest,
+  ): Promise<SessionDTO> {
+    return this.sessionService.logoutSession(name, request);
   }
 
   @Post(':session/restart')

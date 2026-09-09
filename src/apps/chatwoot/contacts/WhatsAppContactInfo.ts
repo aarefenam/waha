@@ -32,6 +32,18 @@ abstract class ChatContactInfo implements ContactInfo {
     return this.chatId;
   }
 
+  async LidId(): Promise<string | null> {
+    return null;
+  }
+
+  async JidId(): Promise<string | null> {
+    return null;
+  }
+
+  async PhoneNumberE164(): Promise<string | null> {
+    return null;
+  }
+
   abstract AvatarUrl(): Promise<string | null>;
 
   abstract Attributes(): Promise<any>;
@@ -53,6 +65,19 @@ class JidContactInfo extends ChatContactInfo {
     return await this.session.findLIDByPN(this.chatId);
   }
 
+  async LidId(): Promise<string | null> {
+    const lid = await this.fetchLid().catch(() => null);
+    return lid || null;
+  }
+
+  async JidId(): Promise<string | null> {
+    return this.chatId;
+  }
+
+  async PhoneNumberE164(): Promise<string | null> {
+    return E164Parser.fromJid(this.chatId);
+  }
+
   @CacheAsync()
   async Attributes() {
     const attributes = {
@@ -67,7 +92,9 @@ class JidContactInfo extends ChatContactInfo {
   }
 
   async PublicContactCreate(): Promise<Contact> {
-    const contact: any = await this.session.getContact(this.chatId);
+    const contact: any = await this.session
+      .getContact(this.chatId)
+      .catch(() => null);
     const name =
       contact?.name || contact?.pushName || contact?.pushname || this.chatId;
     const phoneNumberE164 = E164Parser.fromJid(this.chatId);
@@ -110,6 +137,23 @@ class LidContactInfo extends ChatContactInfo {
     return new JidContactInfo(this.session, pn, this.locale);
   }
 
+  async LidId(): Promise<string | null> {
+    return this.chatId;
+  }
+
+  async JidId(): Promise<string | null> {
+    const jid = await this.jid();
+    return jid?.ChatId() ?? null;
+  }
+
+  async PhoneNumberE164(): Promise<string | null> {
+    const jid = await this.jid();
+    if (!jid) {
+      return null;
+    }
+    return await jid.PhoneNumberE164();
+  }
+
   async AvatarUrl(): Promise<string | null> {
     const jid = await this.jid();
     if (jid) {
@@ -135,10 +179,15 @@ class LidContactInfo extends ChatContactInfo {
     if (jid) {
       result = await jid.PublicContactCreate();
     } else {
+      const contact: any = await this.session
+        .getContact(this.chatId)
+        .catch(() => null);
+      const name =
+        contact?.name || contact?.pushName || contact?.pushname || this.chatId;
       result = {
         inbox_id: 0,
         identifier: this.chatId,
-        name: this.chatId,
+        name: name,
       };
     }
     result.custom_attributes = await this.Attributes();

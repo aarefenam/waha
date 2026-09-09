@@ -381,6 +381,11 @@ export class MessageVideoRequest extends ChatRequest {
   convert: boolean;
 }
 
+export class MessageStickerRequest extends FileRequest {
+  @ReplyToProperty()
+  reply_to?: string;
+}
+
 export class MessageLinkPreviewRequest extends ChatRequest {
   @GeneratedMessageIdProperty()
   id?: string;

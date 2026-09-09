@@ -8,8 +8,10 @@ import {
   GroupParticipantRole,
 } from '@waha/structures/groups.dto';
 import {
+  GroupParticipantsJoinRequestAction,
   GroupParticipantType,
   GroupV2LeaveEvent,
+  GroupV2ParticipantsJoinRequestEvent,
   GroupV2ParticipantsEvent,
   GroupV2UpdateEvent,
 } from '@waha/structures/groups.events.dto';
@@ -199,6 +201,27 @@ export function WppGp2ToGroupV2Update(msg: any): GroupV2UpdateEvent {
   return {
     timestamp: msg.timestamp,
     group: group as any,
+    _data: msg,
+  };
+}
+
+export function WppGp2ToGroupV2ParticipantsJoinRequest(
+  msg: any,
+): GroupV2ParticipantsJoinRequestEvent | null {
+  // Same subtype whatsapp-web.js emits 'group_membership_request' for
+  if (msg.subtype !== 'membership_approval_request') {
+    return null;
+  }
+  if (!msg.chatId || !msg.author) {
+    return null;
+  }
+  return {
+    group: {
+      id: toCusFormat(msg.chatId),
+    },
+    action: GroupParticipantsJoinRequestAction.CREATED,
+    requesterId: toCusFormat(msg.author),
+    timestamp: msg.timestamp,
     _data: msg,
   };
 }
