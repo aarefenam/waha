@@ -639,6 +639,21 @@ function notify() {
     warn "notifikasi WhatsApp gagal dikirim"
 }
 
+# Build cache buildkit tumbuh tiap build dan tidak pernah menyusut sendiri.
+# Terukur 16GB setelah beberapa build di server dengan sisa disk 15GB - cukup
+# untuk memenuhi disk kalau update berjalan mingguan tanpa pengawasan.
+#
+# Hanya menyentuh builder milik WAHA, jadi cache build project lain aman.
+# `--max-used-space` menggantikan `--keep-storage` yang dihapus di buildx 0.35.
+function prune_build_cache() {
+  local limit="${WAHA_BUILD_CACHE_MAX:-4GB}"
+  docker buildx du --builder "$BUILDER_NAME" >/dev/null 2>&1 || return 0
+
+  info "Membersihkan build cache '${BUILDER_NAME}' (batas ${limit})"
+  docker buildx prune --builder "$BUILDER_NAME" --max-used-space "$limit" --force >/dev/null 2>&1 ||
+    warn "gagal membersihkan build cache - cek sisa disk dengan: docker buildx du --builder ${BUILDER_NAME}"
+}
+
 function src_branch() {
   git -C "$SRC_DIR" rev-parse --abbrev-ref HEAD
 }
@@ -787,6 +802,7 @@ function cmd_selfupdate() {
 
   echo
   if [ -z "$broken" ]; then
+    prune_build_cache
     info "Update selesai: ${old_sha} -> ${new_sha}. Semua instance sehat."
     notify "WAHA ter-update: ${old_sha} -> ${new_sha} (${behind} commit). Semua instance sehat."
     return 0
@@ -870,6 +886,7 @@ function cmd_prune() {
     info "hapus ${ref}"
     docker image rm "$ref" >/dev/null || warn "gagal hapus ${ref}"
   done < <(docker image ls --filter 'reference=waha-local' --format '{{.Repository}}:{{.Tag}}')
+  prune_build_cache
   info "Selesai. Image project lain tidak disentuh."
 }
 
