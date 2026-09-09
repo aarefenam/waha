@@ -710,7 +710,10 @@ function cmd_selfupdate() {
   fi
 
   info "Ada ${behind} commit baru di origin/${branch}:"
-  git -C "$SRC_DIR" log --oneline "HEAD..origin/${branch}" | head -30
+  # Batas baris lewat --max-count, bukan `| head`: skrip ini jalan dengan
+  # `set -o pipefail`, dan `head` yang menutup pipe membuat git kena SIGPIPE
+  # sehingga seluruh update berhenti sebelum sempat men-deploy apa pun.
+  git -C "$SRC_DIR" log --oneline --max-count=30 "HEAD..origin/${branch}"
 
   if [ "$check_only" = 'true' ]; then
     notify "WAHA: ada ${behind} commit baru di origin/${branch}. Jalankan: sudo wahactl selfupdate"
