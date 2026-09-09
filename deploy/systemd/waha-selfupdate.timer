@@ -3,7 +3,11 @@ Description=Jadwal update WAHA mingguan
 
 [Timer]
 # Minggu 03:00 WIB - jam paling sepi untuk semua bisnis.
-OnCalendar=Sun *-*-* 03:00:00
+#
+# Zona waktu ditulis eksplisit karena server ini berjalan di UTC. Tanpa
+# "Asia/Jakarta", systemd memakai zona sistem dan jadwalnya meleset jadi
+# 10:00 WIB - jam sibuk. Butuh systemd 252+ (server ini 255).
+OnCalendar=Sun *-*-* 03:00:00 Asia/Jakarta
 Persistent=true
 # Sebar acak sampai 30 menit supaya build tidak selalu jatuh di detik yang sama.
 RandomizedDelaySec=1800
