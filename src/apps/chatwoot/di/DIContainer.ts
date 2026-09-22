@@ -10,6 +10,7 @@ import { ChatWootInboxAPI } from '@waha/apps/chatwoot/client/interfaces';
 import {
   ChatWootAppConfig,
   ChatWootConfig,
+  ChatWootOutgoingMode,
   DEFAULT_LOCALE,
   LinkPreview,
 } from '@waha/apps/chatwoot/dto/config.dto';
@@ -20,8 +21,10 @@ import {
   ChatwootMessageRepository,
   MessageMappingRepository,
   MessageMappingService,
+  WhatsAppAckRepository,
   WhatsAppMessageRepository,
 } from '@waha/apps/chatwoot/storage';
+import { MessageStatusService } from '@waha/apps/chatwoot/services/MessageStatusService';
 import { Job } from 'bullmq';
 import { Knex } from 'knex';
 import { i18n } from '@waha/apps/chatwoot/i18n';
@@ -119,6 +122,10 @@ export class DIContainer {
     );
   }
 
+  public OutgoingMode(): ChatWootOutgoingMode {
+    return this.ChatWootConfig().conversations.outgoing;
+  }
+
   @CacheSync()
   public ConversationSelector() {
     const config = this.ChatWootConfig();
@@ -185,6 +192,20 @@ export class DIContainer {
     );
   }
 
+  @CacheSync()
+  private WhatsAppAckRepository(): WhatsAppAckRepository {
+    return new WhatsAppAckRepository(this.Knex(), this.AppPk());
+  }
+
+  @CacheSync()
+  public MessageStatusService(): MessageStatusService {
+    return new MessageStatusService(
+      this.MessageMappingService(),
+      this.WhatsAppAckRepository(),
+      this.ContactConversationService(),
+    );
+  }
+
   public ChatWootErrorReporter(job: Job): ChatWootErrorReporter {
     return new ChatWootErrorReporter(this.Logger(), job, this.Locale());
   }
@@ -229,6 +250,8 @@ export function ChatWootConfigDefaults(
       sort: ConversationSort.created_newest,
       status: null,
       markAsRead: true,
+      syncMessageStatus: false,
+      outgoing: ChatWootOutgoingMode.PRIVATE_NOTE,
     },
   };
   return lodash.defaultsDeep({}, config, defaults);

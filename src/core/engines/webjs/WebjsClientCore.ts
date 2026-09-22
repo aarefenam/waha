@@ -1,4 +1,7 @@
-import { WebJSPresence } from '@waha/core/engines/webjs/types';
+import {
+  WebJSPresence,
+  WebJSPresenceUpdate,
+} from '@waha/core/engines/webjs/types';
 import { GetSerialized } from '@waha/core/utils/serialized';
 import { GetChatMessagesFilter } from '@waha/structures/chats.dto';
 import { Label } from '@waha/structures/labels.dto';
@@ -198,9 +201,109 @@ export class WebjsClientCore extends Client {
         return;
       },
     );
+    await exposeFunctionIfAbsent(
+      this.pupPage,
+      'onPresenceUpdate',
+      (data: WebJSPresenceUpdate) => {
+        this.events.emit('presence.update', data);
+        return;
+      },
+    );
+    await this.attachPresenceEvents();
     if (this.tags) {
       await this.attachTagsEvents();
     }
+  }
+
+  /**
+   * Presence lands in PresenceCollection on the main thread even when WhatsApp runs comms in a worker,
+   * so listen to the models instead of raw stanzas
+   */
+  async attachPresenceEvents() {
+    await this.pupPage.evaluate(() => {
+      // @ts-ignore
+      if (window.presenceEventsOn) {
+        return;
+      }
+      // @ts-ignore
+      window.presenceEventsOn = true;
+
+      const d = require;
+      const PresenceCollection = d(
+        'WAWebPresenceCollection',
+      ).PresenceCollection;
+      const WAWebApiContact = d('WAWebApiContact');
+
+      // Prefer the phone number id when the LID mapping is known
+      const toId = (wid) => {
+        let id = wid;
+        if (wid.isLid()) {
+          id = WAWebApiContact.getPhoneNumber(wid) ?? wid;
+        }
+        // @ts-ignore
+        return window.WWebJS.GetSerialized(id);
+      };
+
+      const toPresences = (presence) => {
+        if (!presence.isGroup) {
+          return [
+            {
+              participant: toId(presence.id),
+              lastSeen: presence.chatstate.t,
+              state: presence.chatstate.type,
+            },
+          ];
+        }
+        return presence.chatstates
+          .getModelsArray()
+          .filter((chatstate) => !!chatstate.type)
+          .map((chatstate) => {
+            return {
+              participant: toId(chatstate.id),
+              lastSeen: chatstate.t,
+              state: chatstate.type,
+            };
+          });
+      };
+
+      // type and t change in one set() - coalesce into a single event per presence
+      const pending = new Set<any>();
+      const flush = () => {
+        for (const presence of pending) {
+          // @ts-ignore
+          window.onPresenceUpdate({
+            id: toId(presence.id),
+            presences: toPresences(presence),
+          });
+        }
+        pending.clear();
+      };
+
+      const findPresence = (chatstate) => {
+        const presence = PresenceCollection.get(chatstate.id);
+        if (presence && presence.chatstate === chatstate) {
+          return presence;
+        }
+        // Group chatstate id is the participant, not the group
+        return PresenceCollection.getModelsArray().find(
+          (model) => model.chatstate === chatstate,
+        );
+      };
+
+      PresenceCollection.on(
+        'change:chatstate.type change:chatstate.t',
+        (chatstate) => {
+          const presence = findPresence(chatstate);
+          if (!presence || !presence.hasData) {
+            return;
+          }
+          if (pending.size === 0) {
+            queueMicrotask(flush);
+          }
+          pending.add(presence);
+        },
+      );
+    });
   }
 
   async attachTagsEvents() {
@@ -210,7 +313,7 @@ export class WebjsClientCore extends Client {
         return;
       }
 
-      const tags = ['receipt', 'presence', 'chatstate'];
+      const tags = ['receipt'];
       const WAWap = window.require('WAWap');
       // @ts-ignore
       window.decodeStanzaBack = WAWap.decodeStanza;
@@ -639,45 +742,72 @@ export class WebjsClientCore extends Client {
   /**
    * Presences methods
    */
-  public async subscribePresence(chatId: string): Promise<void> {
-    await this.pupPage.evaluate(async (chatId) => {
-      const d = require;
-      const WidFactory = d('WAWebWidFactory');
 
-      const wid = WidFactory.createWidFromWidLike(chatId);
-      const chat = d('WAWebChatCollection').ChatCollection.get(wid);
-      const tc = chat == null ? void 0 : chat.getTcToken();
-      await d('WAWebContactPresenceBridge').subscribePresence(wid, tc);
+  /**
+   * WhatsApp keys 1:1 presence by LID on LID-migrated accounts, so map @c.us to the current LID when known
+   */
+  private async getPresenceKey(chatId: string): Promise<string> {
+    return await this.pupPage.evaluate((chatId) => {
+      const d = require;
+      const wid = d('WAWebWidFactory').createWidFromWidLike(chatId);
+      if (wid.isGroup() || wid.isLid()) {
+        return chatId;
+      }
+      const lid = d('WAWebApiContact').getCurrentLid(wid);
+      if (!lid) {
+        return chatId;
+      }
+      // @ts-ignore
+      return window.WWebJS.GetSerialized(lid);
     }, chatId);
   }
 
-  private async getCurrentPresence(chatId: string): Promise<WebJSPresence[]> {
-    const result = await this.pupPage.evaluate(async (chatId) => {
+  public async subscribePresence(chatId: string): Promise<void> {
+    const key = await this.getPresenceKey(chatId);
+    await this.pupPage.evaluate(async (chatId) => {
       const d = require;
-      const WidFactory = d('WAWebWidFactory');
-      const PresenceCollection = d(
-        'WAWebPresenceCollection',
-      ).PresenceCollection;
-      const wid = WidFactory.createWidFromWidLike(chatId);
-      const presence = PresenceCollection.get(wid);
-      if (!presence) {
-        return [];
-      }
-      let chatstates = [];
-      if (chatId.endsWith('@c.us')) {
-        chatstates = [presence.chatstate];
-      } else {
-        chatstates = presence.chatstates.getModelsArray();
-      }
-      return chatstates.map((chatstate) => {
-        return {
-          // @ts-ignore
-          participant: window.WWebJS.GetSerialized(chatstate.id),
-          lastSeen: chatstate.t,
-          state: chatstate.type,
-        };
-      });
-    }, chatId);
+      const wid = d('WAWebWidFactory').createWidFromWidLike(chatId);
+      // find() subscribes user or group presence the same way the app does
+      await d('WAWebPresenceCollection').PresenceCollection.find(wid);
+    }, key);
+  }
+
+  private async getCurrentPresence(chatId: string): Promise<WebJSPresence[]> {
+    const key = await this.getPresenceKey(chatId);
+    const result = await this.pupPage.evaluate(
+      async (chatId, key) => {
+        const d = require;
+        const WidFactory = d('WAWebWidFactory');
+        const PresenceCollection = d(
+          'WAWebPresenceCollection',
+        ).PresenceCollection;
+        const wid = WidFactory.createWidFromWidLike(key);
+        const presence = PresenceCollection.get(wid);
+        if (!presence) {
+          return [];
+        }
+        if (wid.isGroup()) {
+          return presence.chatstates.getModelsArray().map((chatstate) => {
+            return {
+              // @ts-ignore
+              participant: window.WWebJS.GetSerialized(chatstate.id),
+              lastSeen: chatstate.t,
+              state: chatstate.type,
+            };
+          });
+        }
+        // Report the id the caller asked for, not the LID key
+        return [
+          {
+            participant: chatId,
+            lastSeen: presence.chatstate.t,
+            state: presence.chatstate.type,
+          },
+        ];
+      },
+      chatId,
+      key,
+    );
     return result;
   }
 

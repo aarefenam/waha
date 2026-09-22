@@ -1,13 +1,12 @@
-import {
-  ApiExtraModels,
-  ApiHideProperty,
-  ApiProperty,
-  getSchemaPath,
-} from '@nestjs/swagger';
+import { ApiExtraModels, ApiProperty, getSchemaPath } from '@nestjs/swagger';
 import { IsFileType } from '@waha/nestjs/validation/IsFileType';
+import { TrimString, TrimStrings } from '@waha/nestjs/validation/TrimString';
 import { GetChatMessagesQuery } from '@waha/structures/chats.dto';
 import { plainToInstance, Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  ArrayUnique,
   IsArray,
   IsBoolean,
   IsNotEmpty,
@@ -15,6 +14,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  MaxLength,
   ValidateNested,
 } from 'class-validator';
 
@@ -38,6 +38,7 @@ import {
   ChatIdProperty,
   ConvertApiProperty,
   GeneratedMessageIdProperty,
+  MentionsProperty,
   ReplyToProperty,
 } from './properties.dto';
 
@@ -185,7 +186,7 @@ export class MessageTextRequest extends ChatRequest {
 
   text: string = 'Hi there!';
 
-  @ApiHideProperty()
+  @MentionsProperty()
   mentions?: string[];
 
   @ReplyToProperty()
@@ -267,7 +268,7 @@ export class MessageLinkCustomPreviewRequest extends ChatRequest {
 export class EditMessageRequest {
   text: string = 'Hello, world!';
 
-  @ApiHideProperty()
+  @MentionsProperty()
   mentions?: string[];
 
   linkPreview?: boolean = true;
@@ -315,7 +316,7 @@ class FileRequest extends ChatRequest {
 export class MessageImageRequest extends FileRequest {
   caption?: string;
 
-  @ApiHideProperty()
+  @MentionsProperty()
   mentions?: string[];
 
   @ReplyToProperty()
@@ -325,7 +326,7 @@ export class MessageImageRequest extends FileRequest {
 export class MessageFileRequest extends FileRequest {
   caption?: string;
 
-  @ApiHideProperty()
+  @MentionsProperty()
   mentions?: string[];
 
   @ReplyToProperty()
@@ -361,7 +362,7 @@ export class MessageVideoRequest extends ChatRequest {
 
   caption?: string = 'Just watch at this!';
 
-  @ApiHideProperty()
+  @MentionsProperty()
   mentions?: string[];
 
   @ApiProperty({
@@ -441,20 +442,38 @@ export class MessagePoll {
   @ApiProperty({
     example: 'How are you?',
   })
+  @Transform(TrimString)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
   name: string;
 
   @ApiProperty({
     example: ['Awesome!', 'Good!', 'Not bad!'],
   })
+  @Transform(TrimStrings)
+  @IsArray()
+  @ArrayMinSize(2)
+  @ArrayMaxSize(12)
+  @ArrayUnique()
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  @MaxLength(100, { each: true })
   options: string[];
 
+  @IsOptional()
+  @IsBoolean()
   multipleAnswers = false;
 }
 
 export class MessagePollRequest extends ChatRequest {
   @GeneratedMessageIdProperty()
+  @IsOptional()
+  @IsString()
   id?: string;
 
+  @ValidateNested()
+  @Type(() => MessagePoll)
   poll: MessagePoll;
 
   @ApiProperty({
@@ -462,6 +481,8 @@ export class MessagePollRequest extends ChatRequest {
       'The ID of the message to reply to - false_11111111111@c.us_AAAAAAAAAAAAAAAAAAAA',
     example: null,
   })
+  @IsOptional()
+  @IsString()
   reply_to?: string;
 }
 

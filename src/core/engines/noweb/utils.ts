@@ -36,7 +36,10 @@ export function extractMediaContent(
     content?.templateMessage?.hydratedTemplate?.videoMessage ||
     content?.templateMessage?.interactiveMessageTemplate?.header
       ?.imageMessage ||
-    content?.templateMessage?.interactiveMessageTemplate?.header?.videoMessage;
+    content?.templateMessage?.interactiveMessageTemplate?.header
+      ?.videoMessage ||
+    content?.templateMessage?.interactiveMessageTemplate?.header
+      ?.documentMessage;
   if (mediaContent) {
     return mediaContent;
   }
