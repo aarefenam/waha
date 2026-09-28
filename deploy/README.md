@@ -384,6 +384,32 @@ sudo rm -rf /opt/waha/src
 sudo git clone -b <branch-deploy> https://github.com/aarefenam/waha /opt/waha/src
 ```
 
+**Setelah pindah server, cek tahap 2 masih hidup.** Tahap 1 tetap sukses di
+GitHub walaupun server tidak pernah menarik apa pun, jadi kerusakan di sini
+tidak kelihatan. Ini pernah terjadi: migrasi ke Contabo mengirim source lewat
+rsync dan lupa memasang timer, dan server tertahan di versi lama tanpa kabar.
+
+```bash
+test -d /opt/waha/src/.git && echo "src: clone git OK"
+systemctl list-timers waha-selfupdate.timer   # harus ada jadwal NEXT
+wahactl selfupdate --check                     # tidak boleh error
+```
+
+Kalau source baru di-clone dan versi yang sedang jalan belum diketahui,
+`selfupdate` akan bilang "Sudah terbaru" dan tidak men-deploy apa pun. Supaya
+deploy pertama tetap punya jalur rollback, mundurkan HEAD ke commit lama dan
+beri image yang sedang jalan tag versi itu:
+
+```bash
+git -C /opt/waha/src reset --hard <commit-lama>
+docker tag waha-local:nobrowser "waha-local:nobrowser-$(git -C /opt/waha/src rev-parse --short HEAD)"
+sudo systemctl start waha-selfupdate.service
+journalctl -u waha-selfupdate.service -f
+```
+
+Repo juga harus mengaktifkan Issues. Kalau Issues mati, langkah "Open issue on
+failure" di workflow ikut gagal dan sync yang rusak lewat tanpa pemberitahuan.
+
 ### Backup
 
 Yang wajib di-backup adalah folder auth session — kalau hilang, semua nomor
