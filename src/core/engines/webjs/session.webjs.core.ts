@@ -117,6 +117,7 @@ import {
   GroupSortField,
   ParticipantsRequest,
   SettingsMemberAddMode,
+  SettingsMemberShareHistoryMode,
   SettingsMembershipApproval,
   SettingsSecurityChangeInfo,
 } from '@waha/structures/groups.dto';
@@ -683,22 +684,6 @@ export class WhatsappSessionWebJSCore extends WhatsappSession {
     this.whatsapp.on(Events.READY, () => {
       this.qr.save('');
       this.logger.info(`Session '${this.name}' is ready!`);
-    });
-
-    //
-    // Temp fix for hiding "Fresh look" modal
-    // https://github.com/devlikeapro/waha/issues/987
-    //
-    this.whatsapp.on(Events.READY, async () => {
-      try {
-        const hidden = await this.whatsapp.hideUXFreshLook();
-        if (hidden) {
-          this.logger.info('"Fresh look" modal has been hidden');
-        }
-      } catch (err) {
-        this.logger.warn('Failed to hide "Fresh look" modal');
-        this.logger.warn(err, err.stack);
-      }
     });
 
     this.whatsapp.on(Events.AUTHENTICATED, async (args) => {
@@ -1755,6 +1740,28 @@ export class WhatsappSessionWebJSCore extends WhatsappSession {
     const groupChat = (await this.whatsapp.getChatById(id)) as GroupChat;
     // The library setter is inverted - it takes "adminsOnly"
     return groupChat.setAddMembersAdminsOnly(!value);
+  }
+
+  public async getMemberShareHistoryMode(
+    id: string,
+  ): Promise<SettingsMemberShareHistoryMode> {
+    const groupChat = (await this.whatsapp.getChatById(id)) as GroupChat;
+    return {
+      membersCanShareHistory:
+        // @ts-ignore
+        groupChat.groupMetadata.memberShareGroupHistoryMode ===
+        'all_member_share',
+    };
+  }
+
+  @Activity()
+  public async setMemberShareHistoryMode(
+    id: string,
+    value: boolean,
+  ): Promise<boolean> {
+    const groupChat = (await this.whatsapp.getChatById(id)) as GroupChat;
+    // The library setter is inverted - it takes "adminsOnly"
+    return groupChat.setShareHistoryAdminsOnly(!value);
   }
 
   @Activity()

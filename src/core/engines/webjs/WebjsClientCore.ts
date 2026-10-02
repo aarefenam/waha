@@ -142,26 +142,6 @@ export class WebjsClientCore extends Client {
   }
 
   /**
-   * @result indicating whether the UX fresh look was successfully hidden.
-   */
-  hideUXFreshLook(): Promise<boolean> {
-    return this.pupPage.evaluate(() => {
-      const WAWebUserPrefsUiRefresh = window.require('WAWebUserPrefsUiRefresh');
-      if (!WAWebUserPrefsUiRefresh) {
-        return false;
-      }
-      if (WAWebUserPrefsUiRefresh.getUiRefreshNuxAcked()) {
-        return false;
-      }
-      WAWebUserPrefsUiRefresh.incrementNuxViewCount();
-      WAWebUserPrefsUiRefresh.setUiRefreshNuxAcked(true);
-      const WAWebModalManager = window.require('WAWebModalManager');
-      WAWebModalManager.ModalManager.close();
-      return true;
-    });
-  }
-
-  /**
    * @result indicating whether the "What's New" auto-modal was prevented or dismissed.
    */
   hideWhatsNewModal(): Promise<boolean> {
@@ -179,7 +159,13 @@ export class WebjsClientCore extends Client {
       if (!WAWebUserPrefsMeUser.getMaybeMePnUser()) {
         return false;
       }
-      const nux = WAWebWhatsNewNux.createWhatsNewNux();
+      // The app checks the cool-off with AB-prop driven days (15 or 30)
+      const WAWebWhatsNewGatingUtils = window.require(
+        'WAWebWhatsNewGatingUtils',
+      );
+      const days =
+        WAWebWhatsNewGatingUtils?.getWhatsNewAutoModalCooldownDays?.();
+      const nux = WAWebWhatsNewNux.createWhatsNewNux(days);
       if (!nux.shouldShow()) {
         return false;
       }
@@ -338,9 +324,14 @@ export class WebjsClientCore extends Client {
   async setPushName(name: string) {
     await this.ensureWahaInjected();
     await this.pupPage.evaluate(async (pushName) => {
-      return await window
-        .require('WAWebSetPushnameConnAction')
-        .setPushname(pushName);
+      // @ts-ignore
+      const WAWebSetPushnameConnAction = await window.WWebJS.requireLazy(
+        'WAWebSetPushnameConnAction',
+        {
+          'WAWebProfileDrawer.react': 'WAWebProfileDrawerLoadableRequireBundle',
+        },
+      );
+      return await WAWebSetPushnameConnAction.setPushname(pushName);
     }, name);
     if (this.info) {
       this.info.pushname = name;

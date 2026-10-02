@@ -7,7 +7,7 @@ __metadata:
 
 "@adiwajshing/baileys@github:devlikeapro/Baileys#fork-master-2026-04-28":
   version: 7.0.0-rc14
-  resolution: "@adiwajshing/baileys@https://github.com/devlikeapro/Baileys.git#commit=94d2d1be16f2a316d388a9a273e43ac38a731b5d"
+  resolution: "@adiwajshing/baileys@https://github.com/devlikeapro/Baileys.git#commit=14ed18cd9fc524309fbecaed4949ea73eaf6761e"
   dependencies:
     "@cacheable/node-cache": "npm:^1.4.0"
     "@hapi/boom": "npm:^9.1.3"
@@ -32,7 +32,7 @@ __metadata:
       optional: true
     link-preview-js:
       optional: true
-  checksum: 10/6573177fd2fded5a674ae13f397a837ea976a5cde9b3f4021c9700921b986a7c2030ce4cce66008c879ce8e016e94eb67999ae61fa514cae321c32d6c149ff01
+  checksum: 10/d7c290e64065517c43094f5700daf1230dfa54254aa2965d8efca94bdefbd464904a390f16d695c0305a0e7f408acd9fda566bacb30dc493ff563fcb06892873
   languageName: node
   linkType: hard
 
@@ -5101,8 +5101,8 @@ __metadata:
 
 "@wppconnect/wa-js@github:wppconnect-team/wa-js#main":
   version: 4.6.0
-  resolution: "@wppconnect/wa-js@https://github.com/wppconnect-team/wa-js.git#commit=be5a182c3ad7ad152674c0a087088b32b8a289da"
-  checksum: 10/3d6f887c7ed903a44f7bd17e8adc70f460e8b470e741393795fe4d4c8eb2c2a5ca59eac2623fdcb679149ea27bca1aee976484f2348d5d6852463647be2f5841
+  resolution: "@wppconnect/wa-js@https://github.com/wppconnect-team/wa-js.git#commit=879d5c2b30e2ef633abeed8cdf7f601823ef0911"
+  checksum: 10/29d70f88869e536c438803183b56732b45721a6d267d3c67fe90664bba53d737338262c186d7dcb6f850e6caf8d55276f5422987652958fc207f9ac85e4292e0
   languageName: node
   linkType: hard
 
@@ -14381,7 +14381,7 @@ __metadata:
 
 "whatsapp-web.js@github:devlikeapro/whatsapp-web.js#fork-main-2026-06-26":
   version: 1.34.7
-  resolution: "whatsapp-web.js@https://github.com/devlikeapro/whatsapp-web.js.git#commit=481db6c749f9ca1a2afad34f520769eace9d8f29"
+  resolution: "whatsapp-web.js@https://github.com/devlikeapro/whatsapp-web.js.git#commit=7bcd3528538372f9420a63472491513066993090"
   dependencies:
     archiver: "npm:7.0.1"
     fluent-ffmpeg: "npm:2.1.3"
@@ -14398,7 +14398,7 @@ __metadata:
       optional: true
     unzipper:
       optional: true
-  checksum: 10/917a28428c55aeaf548b726c4afe1a56100cddac5facc4d9306123a06f34f62f36df19094350bd7623668f5065fa891e81c29c8b7615369f773657bb00fa463a
+  checksum: 10/52b776bd9cde2799fed01ca507f8a43e17cce11254fa58cc3e96fa40f206532311050a38d6c25ee895616c9c39286615e6513c952667b6bd8610d5de03068cdb
   languageName: node
   linkType: hard
 
