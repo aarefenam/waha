@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { WhatsappSession } from '@waha/core/abc/session.abc';
+import { findLabelByName } from '@waha/core/utils/labels';
 import { ChatIdApiParam } from '@waha/nestjs/params/ChatIdApiParam';
 import {
   SessionApiParam,
@@ -22,6 +23,7 @@ import {
 import {
   Label,
   LabelBody,
+  LabelListType,
   SetLabelsRequest,
 } from '@waha/structures/labels.dto';
 import * as lodash from 'lodash';
@@ -44,8 +46,11 @@ export class LabelsController {
   @SessionApiParam
   @CheckPolicies(CanSession(Action.Read, FromParam('session')))
   @ApiOperation({ summary: 'Get all labels' })
-  getAll(@WorkingSessionParam session: WhatsappSession): Promise<Label[]> {
-    return session.getLabels();
+  async getAll(
+    @WorkingSessionParam session: WhatsappSession,
+  ): Promise<Label[]> {
+    const labels = await session.getLabels();
+    return lodash.sortBy(labels, (label) => parseInt(label.id, 10));
   }
 
   @Post('/')
@@ -60,11 +65,17 @@ export class LabelsController {
     const labelDto = body.toDTO();
 
     const labels = await session.getLabels();
-    if (labels.length >= 20) {
+    const customLabels = labels.filter(
+      (label) =>
+        label.type == null ||
+        label.type === LabelListType.NONE ||
+        label.type === LabelListType.CUSTOM,
+    );
+    if (customLabels.length >= 20) {
       throw new UnprocessableEntityException('Maximum 20 labels allowed');
     }
 
-    const labelByName = lodash.find(labels, { name: labelDto.name });
+    const labelByName = findLabelByName(labels, labelDto.name);
     if (labelByName) {
       throw new UnprocessableEntityException(
         `Label with '${labelByName.name}' already exists, id: ${labelByName.id}`,
@@ -92,8 +103,9 @@ export class LabelsController {
     const labelDto = body.toDTO();
     const labels = await session.getLabels();
 
-    const labelByName = lodash.find(labels, { name: labelDto.name });
-    if (labelByName) {
+    // Renaming to its own name (e.g. color only change) is fine
+    const labelByName = findLabelByName(labels, labelDto.name);
+    if (labelByName && labelByName.id !== label.id) {
       throw new UnprocessableEntityException(
         `Label with '${labelByName.name}' already exists, id: ${labelByName.id}`,
       );
@@ -102,6 +114,8 @@ export class LabelsController {
     label.name = labelDto.name;
     label.color = labelDto.color;
     label.colorHex = Label.toHex(label.color);
+    label.type ??= LabelListType.CUSTOM;
+    label.isActive ??= true;
     await session.updateLabel(label);
     return label;
   }
@@ -128,11 +142,12 @@ export class LabelsController {
   @ChatIdApiParam
   @CheckPolicies(CanSession(Action.Read, FromParam('session')))
   @ApiOperation({ summary: 'Get labels for the chat' })
-  getChatLabels(
+  async getChatLabels(
     @WorkingSessionParam session: WhatsappSession,
     @Param('chatId') chatId: string,
   ): Promise<Label[]> {
-    return session.getChatLabels(chatId);
+    const labels = await session.getChatLabels(chatId);
+    return lodash.sortBy(labels, (label) => parseInt(label.id, 10));
   }
 
   @Put('/chats/:chatId')

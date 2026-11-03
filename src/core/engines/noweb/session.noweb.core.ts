@@ -43,6 +43,7 @@ import type {
 } from '@adiwajshing/baileys/lib/Types';
 import { ILogger } from '@adiwajshing/baileys/lib/Utils/logger';
 import { isLidUser } from '@adiwajshing/baileys/lib/WABinary/jid-utils';
+import { LidMappingKeyStore } from '@waha/core/engines/noweb/LidMappingKeyStore';
 import { UnprocessableEntityException } from '@nestjs/common';
 import { parseMessageCapping } from '@waha/core/abc/capping';
 import {
@@ -59,6 +60,8 @@ import {
   ToGroupV2ParticipantsJoinRequestEvent,
   ToGroupV2Participants,
   ToGroupV2UpdateEvent,
+  ToGroupParticipantTag,
+  ToGroupV2ParticipantsTagEvent,
 } from '@waha/core/engines/noweb/groups.noweb';
 import { sendButtonMessage } from '@waha/core/engines/noweb/noweb.buttons';
 import {
@@ -88,6 +91,7 @@ import {
   jidsFromKey,
   toCusFormat,
   toJID,
+  isJidGroup,
 } from '@waha/core/utils/jids';
 import { DistinctAck, DistinctMessages } from '@waha/core/utils/reactive';
 import {
@@ -171,7 +175,9 @@ import {
   SettingsMemberShareHistoryMode,
   SettingsMembershipApproval,
   SettingsSecurityChangeInfo,
+  GroupParticipantTag,
 } from '@waha/structures/groups.dto';
+import { GroupV2ParticipantsTagEvent } from '@waha/structures/groups.events.dto';
 import {
   Label,
   LabelChatAssociation,
@@ -236,6 +242,7 @@ import {
   partition,
   share,
   tap,
+  Subject,
 } from 'rxjs';
 import { debounceTime, map } from 'rxjs/operators';
 
@@ -249,6 +256,7 @@ import {
   IsEditedMessage,
   IsHistorySyncNotification,
   IsSecretEncryptedMessageEdit,
+  IsGroupMemberTagMessage,
 } from '@waha/core/utils/pwa';
 import {
   decryptSecretEncryptedMessageEditProto,
@@ -388,7 +396,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
   getSocketConfig(agents: Agents | undefined, state): Partial<SocketConfig> {
     // Detect browser
-    let browser = ['Ubuntu', 'Chrome', '22.04.4'] as WABrowserDescription;
+    let browser = ['Ubuntu', 'Chrome', '22.0.4'] as WABrowserDescription;
     let deviceName =
       this.sessionConfig?.client?.deviceName ?? WAHA_CLIENT_DEVICE_NAME;
     let browserName =
@@ -396,7 +404,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     if (browserName && !deviceName) {
       browser = Browsers.appropriate(browserName);
     } else if (!browserName && deviceName) {
-      browser = [deviceName, 'Chrome', '22.04.4'];
+      browser = [deviceName, 'Chrome', '22.0.4'];
     } else if (browserName && deviceName) {
       switch (deviceName) {
         case 'Mac OS':
@@ -449,11 +457,10 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
         this.sessionStore,
         this.name,
       );
+      const keys = new LidMappingKeyStore(store.state.keys);
+      keys.lids$.subscribe((lids) => this.store.saveLids(lids));
       /** caching makes the store faster to send/recv messages */
-      store.state.keys = makeCacheableSignalKeyStore(
-        store.state.keys,
-        this.engineLogger,
-      );
+      store.state.keys = makeCacheableSignalKeyStore(keys, this.engineLogger);
       this.authNOWEBStore = store;
     }
     const { state, saveCreds } = this.authNOWEBStore;
@@ -952,6 +959,8 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       this.logger.warn(`Failed to terminate WebSocket: ${err}`);
     }
   }
+
+  private myMemberTag$ = new Subject<GroupV2ParticipantsTagEvent>();
 
   getSessionMeInfo(): MeInfo | null {
     const me = this.sock?.authState?.creds?.me;
@@ -1942,6 +1951,8 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       color: label.color,
       deleted: false,
       predefinedId: undefined,
+      type: label.type,
+      isActive: label.isActive,
     };
     await this.sock.addLabel(undefined, labelAction);
     return label;
@@ -1995,6 +2006,8 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       name: label.name,
       color: color,
       colorHex: Label.toHex(color),
+      type: label.type,
+      isActive: label.isActive,
     };
   }
 
@@ -2253,6 +2266,60 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
   ): Promise<boolean> {
     const mode = value ? 'all_member_share' : 'admin_share';
     await this.sock.groupMemberShareHistoryMode(id, mode);
+    return true;
+  }
+
+  public async getGroupParticipantTags(
+    id: string,
+  ): Promise<GroupParticipantTag[]> {
+    const tags = await this.store.getGroupMemberTags(toJID(id));
+    return tags.map(ToGroupParticipantTag);
+  }
+
+  public async getGroupParticipantTag(
+    id: string,
+    participantId: string,
+  ): Promise<GroupParticipantTag> {
+    const tag = await this.store.getGroupMemberTag(
+      toJID(id),
+      toJID(participantId),
+    );
+    if (!tag) {
+      return {
+        id: toCusFormat(participantId),
+        tag: null,
+        timestamp: null,
+      };
+    }
+    return ToGroupParticipantTag(tag);
+  }
+
+  protected getMyParticipantId(me: MeInfo): string {
+    return me.lid ?? me.id;
+  }
+
+  @Activity()
+  public async setGroupMemberTag(id: string, tag: string): Promise<boolean> {
+    const groupId = toJID(id);
+    await this.sock.updateMemberLabel(groupId, tag);
+    // Own sends are not echoed back, keep the store and the event in sync here
+    const me = this.getSessionMeInfo();
+    const memberId = this.getMyParticipantId(me);
+    const timestamp = Math.floor(Date.now() / 1000);
+    await this.store.saveGroupMemberTag({
+      id: null,
+      groupId: groupId,
+      memberId: toJID(memberId),
+      tag: tag,
+      timestamp: timestamp,
+    });
+    this.myMemberTag$.next({
+      group: { id: id },
+      participant: { id: memberId, pn: me.id },
+      tag: tag || null,
+      timestamp: timestamp,
+      _data: null,
+    });
     return true;
   }
 
@@ -2911,6 +2978,16 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       }),
     );
     this.events2.get(WAHAEvents.MESSAGE_EDITED).switch(messagesEdited$);
+
+    // Group member tags
+    const groupV2ParticipantsTag$ = messagesUpsert$.pipe(
+      filter((message) => isJidGroup(message.key?.remoteJid)),
+      filter((message) => IsGroupMemberTagMessage(message.message)),
+      map(ToGroupV2ParticipantsTagEvent),
+    );
+    this.events2
+      .get(WAHAEvents.GROUP_V2_PARTICIPANTS_TAG)
+      .switch(merge(groupV2ParticipantsTag$, this.myMemberTag$));
 
     //
     // Message Reactions
@@ -3720,14 +3797,40 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       const key = parseMessageIdSerialized(request.reply_to, true);
       quoted = await this.store.loadMessage(jid, key.id);
     }
-    const chat = await this.store.getChat(jid);
+    const ephemeralExpiration = await this.getEphemeralExpiration(jid);
     const messageId = request.id ? request.id : this.generateMessageID();
     this.hooks.message.sent.call(messageId);
     return {
       quoted: quoted,
-      ephemeralExpiration: chat?.ephemeralExpiration,
+      ephemeralExpiration: ephemeralExpiration,
       messageId: messageId,
     };
+  }
+
+  private async getEphemeralExpiration(
+    jid: string,
+  ): Promise<number | undefined> {
+    const chat = await this.store.getChat(jid);
+    if (chat?.ephemeralExpiration) {
+      return chat.ephemeralExpiration;
+    }
+
+    // Nothing found for the chat, check by alt
+    if (this.store instanceof NowebInMemoryStore) {
+      return undefined;
+    }
+    let altJid: string | null = null;
+    if (isPnUser(jid)) {
+      altJid = await this.store.findLidByPN(jid);
+    } else if (isLidUser(jid)) {
+      altJid = await this.store.findPNByLid(jid);
+    }
+
+    if (!altJid) {
+      return undefined;
+    }
+    const altChat = await this.store.getChat(altJid);
+    return altChat?.ephemeralExpiration ?? undefined;
   }
 
   protected getLinkPreview(request): any {

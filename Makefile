@@ -15,6 +15,9 @@ build-noweb:
 build-gows:
 	docker build . -t devlikeapro/waha-plus:gows --build-arg USE_BROWSER=none --build-arg WHATSAPP_DEFAULT_ENGINE=GOWS
 
+test-docker:
+	docker build . --target test
+
 build-ssh:
 	# check IMAGE provided
 	@[ "${IMAGE}" ]  || ( echo "Add APP: make build-ssh image=devlikeapro/waha"; exit 1 );
@@ -91,3 +94,23 @@ up-dashboard:
 copy-dashboard:
 	cd ../waha-hub/ui && \
 	make copy-waha
+
+# Run ChatWoot stack (postgres, redis, chatwoot, sidekiq) for local development - without WAHA itself
+CHATWOOT_COMPOSE = docker compose -f docker-compose/chatwoot/docker-compose.yaml
+
+dev-chatwoot-up:
+	$(CHATWOOT_COMPOSE) up -d postgres redis
+	$(CHATWOOT_COMPOSE) run --rm chatwoot bundle exec rails db:chatwoot_prepare
+	$(CHATWOOT_COMPOSE) up -d chatwoot chatwoot-sidekiq
+	@echo ""
+	@echo "ChatWoot: http://localhost:3009"
+	@echo ""
+	@echo "Run WAHA on the host with:"
+	@echo "WAHA_APPS_ENABLED=True;REDIS_URL=redis://:redis@localhost:6379;WAHA_BASE_URL=http://host.docker.internal:3000;WAHA_PUBLIC_URL=http://localhost:3000;WHATSAPP_SESSIONS_POSTGRESQL_URL=postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+	@echo ""
+	@echo "In ChatWoot - inbox webhook URL must point to the host via 'host.docker.internal':"
+	@echo "  http://host.docker.internal:3000/webhooks/chatwoot/{session}/{appId}"
+	@echo "In WAHA - app config 'url': http://localhost:3009"
+
+dev-chatwoot-down:
+	$(CHATWOOT_COMPOSE) down

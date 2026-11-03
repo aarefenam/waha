@@ -655,6 +655,122 @@ export namespace messages {
             return JidStringRequest.deserialize(bytes);
         }
     }
+    export class GroupMemberRequest extends pb_1.Message {
+        #one_of_decls: number[][] = [];
+        constructor(data?: any[] | {
+            session?: Session;
+            jid?: string;
+            member?: string;
+        }) {
+            super();
+            pb_1.Message.initialize(this, Array.isArray(data) ? data : [], 0, -1, [], this.#one_of_decls);
+            if (!Array.isArray(data) && typeof data == "object") {
+                if ("session" in data && data.session != undefined) {
+                    this.session = data.session;
+                }
+                if ("jid" in data && data.jid != undefined) {
+                    this.jid = data.jid;
+                }
+                if ("member" in data && data.member != undefined) {
+                    this.member = data.member;
+                }
+            }
+        }
+        get session() {
+            return pb_1.Message.getWrapperField(this, Session, 1) as Session;
+        }
+        set session(value: Session) {
+            pb_1.Message.setWrapperField(this, 1, value);
+        }
+        get has_session() {
+            return pb_1.Message.getField(this, 1) != null;
+        }
+        get jid() {
+            return pb_1.Message.getFieldWithDefault(this, 2, "") as string;
+        }
+        set jid(value: string) {
+            pb_1.Message.setField(this, 2, value);
+        }
+        get member() {
+            return pb_1.Message.getFieldWithDefault(this, 3, "") as string;
+        }
+        set member(value: string) {
+            pb_1.Message.setField(this, 3, value);
+        }
+        static fromObject(data: {
+            session?: ReturnType<typeof Session.prototype.toObject>;
+            jid?: string;
+            member?: string;
+        }): GroupMemberRequest {
+            const message = new GroupMemberRequest({});
+            if (data.session != null) {
+                message.session = Session.fromObject(data.session);
+            }
+            if (data.jid != null) {
+                message.jid = data.jid;
+            }
+            if (data.member != null) {
+                message.member = data.member;
+            }
+            return message;
+        }
+        toObject() {
+            const data: {
+                session?: ReturnType<typeof Session.prototype.toObject>;
+                jid?: string;
+                member?: string;
+            } = {};
+            if (this.session != null) {
+                data.session = this.session.toObject();
+            }
+            if (this.jid != null) {
+                data.jid = this.jid;
+            }
+            if (this.member != null) {
+                data.member = this.member;
+            }
+            return data;
+        }
+        serialize(): Uint8Array;
+        serialize(w: pb_1.BinaryWriter): void;
+        serialize(w?: pb_1.BinaryWriter): Uint8Array | void {
+            const writer = w || new pb_1.BinaryWriter();
+            if (this.has_session)
+                writer.writeMessage(1, this.session, () => this.session.serialize(writer));
+            if (this.jid.length)
+                writer.writeString(2, this.jid);
+            if (this.member.length)
+                writer.writeString(3, this.member);
+            if (!w)
+                return writer.getResultBuffer();
+        }
+        static deserialize(bytes: Uint8Array | pb_1.BinaryReader): GroupMemberRequest {
+            const reader = bytes instanceof pb_1.BinaryReader ? bytes : new pb_1.BinaryReader(bytes), message = new GroupMemberRequest();
+            while (reader.nextField()) {
+                if (reader.isEndGroup())
+                    break;
+                switch (reader.getFieldNumber()) {
+                    case 1:
+                        reader.readMessage(message.session, () => message.session = Session.deserialize(reader));
+                        break;
+                    case 2:
+                        message.jid = reader.readString();
+                        break;
+                    case 3:
+                        message.member = reader.readString();
+                        break;
+                    default: reader.skipField();
+                }
+            }
+            return message;
+        }
+        serializeBinary(): Uint8Array {
+            return this.serialize();
+        }
+        static deserializeBinary(bytes: Uint8Array): GroupMemberRequest {
+            return GroupMemberRequest.deserialize(bytes);
+        }
+    }
     export class JidBoolRequest extends pb_1.Message {
         #one_of_decls: number[][] = [];
         constructor(data?: any[] | {
@@ -10455,12 +10571,16 @@ export namespace messages {
         }
     }
     export class Label extends pb_1.Message {
-        #one_of_decls: number[][] = [];
-        constructor(data?: any[] | {
+        #one_of_decls: number[][] = [[5], [6]];
+        constructor(data?: any[] | ({
             id?: string;
             name?: string;
             color?: number;
-        }) {
+        } & (({
+            type?: number;
+        }) | ({
+            isActive?: boolean;
+        })))) {
             super();
             pb_1.Message.initialize(this, Array.isArray(data) ? data : [], 0, -1, [], this.#one_of_decls);
             if (!Array.isArray(data) && typeof data == "object") {
@@ -10472,6 +10592,12 @@ export namespace messages {
                 }
                 if ("color" in data && data.color != undefined) {
                     this.color = data.color;
+                }
+                if ("type" in data && data.type != undefined) {
+                    this.type = data.type;
+                }
+                if ("isActive" in data && data.isActive != undefined) {
+                    this.isActive = data.isActive;
                 }
             }
         }
@@ -10493,10 +10619,48 @@ export namespace messages {
         set color(value: number) {
             pb_1.Message.setField(this, 4, value);
         }
+        get type() {
+            return pb_1.Message.getFieldWithDefault(this, 5, 0) as number;
+        }
+        set type(value: number) {
+            pb_1.Message.setOneofField(this, 5, this.#one_of_decls[0], value);
+        }
+        get has_type() {
+            return pb_1.Message.getField(this, 5) != null;
+        }
+        get isActive() {
+            return pb_1.Message.getFieldWithDefault(this, 6, false) as boolean;
+        }
+        set isActive(value: boolean) {
+            pb_1.Message.setOneofField(this, 6, this.#one_of_decls[1], value);
+        }
+        get has_isActive() {
+            return pb_1.Message.getField(this, 6) != null;
+        }
+        get _type() {
+            const cases: {
+                [index: number]: "none" | "type";
+            } = {
+                0: "none",
+                5: "type"
+            };
+            return cases[pb_1.Message.computeOneofCase(this, [5])];
+        }
+        get _isActive() {
+            const cases: {
+                [index: number]: "none" | "isActive";
+            } = {
+                0: "none",
+                6: "isActive"
+            };
+            return cases[pb_1.Message.computeOneofCase(this, [6])];
+        }
         static fromObject(data: {
             id?: string;
             name?: string;
             color?: number;
+            type?: number;
+            isActive?: boolean;
         }): Label {
             const message = new Label({});
             if (data.id != null) {
@@ -10508,6 +10672,12 @@ export namespace messages {
             if (data.color != null) {
                 message.color = data.color;
             }
+            if (data.type != null) {
+                message.type = data.type;
+            }
+            if (data.isActive != null) {
+                message.isActive = data.isActive;
+            }
             return message;
         }
         toObject() {
@@ -10515,6 +10685,8 @@ export namespace messages {
                 id?: string;
                 name?: string;
                 color?: number;
+                type?: number;
+                isActive?: boolean;
             } = {};
             if (this.id != null) {
                 data.id = this.id;
@@ -10524,6 +10696,12 @@ export namespace messages {
             }
             if (this.color != null) {
                 data.color = this.color;
+            }
+            if (this.type != null) {
+                data.type = this.type;
+            }
+            if (this.isActive != null) {
+                data.isActive = this.isActive;
             }
             return data;
         }
@@ -10537,6 +10715,10 @@ export namespace messages {
                 writer.writeString(2, this.name);
             if (this.color != 0)
                 writer.writeInt32(4, this.color);
+            if (this.has_type)
+                writer.writeInt32(5, this.type);
+            if (this.has_isActive)
+                writer.writeBool(6, this.isActive);
             if (!w)
                 return writer.getResultBuffer();
         }
@@ -10554,6 +10736,12 @@ export namespace messages {
                         break;
                     case 4:
                         message.color = reader.readInt32();
+                        break;
+                    case 5:
+                        message.type = reader.readInt32();
+                        break;
+                    case 6:
+                        message.isActive = reader.readBool();
                         break;
                     default: reader.skipField();
                 }
@@ -11735,6 +11923,33 @@ export namespace messages {
                 responseSerialize: (message: Empty) => Buffer.from(message.serialize()),
                 responseDeserialize: (bytes: Buffer) => Empty.deserialize(new Uint8Array(bytes))
             },
+            GetGroupMemberLabels: {
+                path: "/messages.MessageService/GetGroupMemberLabels",
+                requestStream: false,
+                responseStream: false,
+                requestSerialize: (message: JidRequest) => Buffer.from(message.serialize()),
+                requestDeserialize: (bytes: Buffer) => JidRequest.deserialize(new Uint8Array(bytes)),
+                responseSerialize: (message: JsonList) => Buffer.from(message.serialize()),
+                responseDeserialize: (bytes: Buffer) => JsonList.deserialize(new Uint8Array(bytes))
+            },
+            GetGroupMemberLabel: {
+                path: "/messages.MessageService/GetGroupMemberLabel",
+                requestStream: false,
+                responseStream: false,
+                requestSerialize: (message: GroupMemberRequest) => Buffer.from(message.serialize()),
+                requestDeserialize: (bytes: Buffer) => GroupMemberRequest.deserialize(new Uint8Array(bytes)),
+                responseSerialize: (message: Json) => Buffer.from(message.serialize()),
+                responseDeserialize: (bytes: Buffer) => Json.deserialize(new Uint8Array(bytes))
+            },
+            SetGroupMemberLabel: {
+                path: "/messages.MessageService/SetGroupMemberLabel",
+                requestStream: false,
+                responseStream: false,
+                requestSerialize: (message: JidStringRequest) => Buffer.from(message.serialize()),
+                requestDeserialize: (bytes: Buffer) => JidStringRequest.deserialize(new Uint8Array(bytes)),
+                responseSerialize: (message: Empty) => Buffer.from(message.serialize()),
+                responseDeserialize: (bytes: Buffer) => Empty.deserialize(new Uint8Array(bytes))
+            },
             UpdateGroupParticipants: {
                 path: "/messages.MessageService/UpdateGroupParticipants",
                 requestStream: false,
@@ -12154,6 +12369,9 @@ export namespace messages {
         abstract SetGroupAnnounce(call: grpc_1.ServerUnaryCall<JidBoolRequest, Empty>, callback: grpc_1.sendUnaryData<Empty>): void;
         abstract SetGroupMemberAddMode(call: grpc_1.ServerUnaryCall<JidBoolRequest, Empty>, callback: grpc_1.sendUnaryData<Empty>): void;
         abstract SetGroupMemberShareHistoryMode(call: grpc_1.ServerUnaryCall<JidBoolRequest, Empty>, callback: grpc_1.sendUnaryData<Empty>): void;
+        abstract GetGroupMemberLabels(call: grpc_1.ServerUnaryCall<JidRequest, JsonList>, callback: grpc_1.sendUnaryData<JsonList>): void;
+        abstract GetGroupMemberLabel(call: grpc_1.ServerUnaryCall<GroupMemberRequest, Json>, callback: grpc_1.sendUnaryData<Json>): void;
+        abstract SetGroupMemberLabel(call: grpc_1.ServerUnaryCall<JidStringRequest, Empty>, callback: grpc_1.sendUnaryData<Empty>): void;
         abstract UpdateGroupParticipants(call: grpc_1.ServerUnaryCall<UpdateParticipantsRequest, JsonList>, callback: grpc_1.sendUnaryData<JsonList>): void;
         abstract SetGroupJoinApprovalMode(call: grpc_1.ServerUnaryCall<JidBoolRequest, Empty>, callback: grpc_1.sendUnaryData<Empty>): void;
         abstract GetGroupRequestParticipants(call: grpc_1.ServerUnaryCall<JidRequest, JsonList>, callback: grpc_1.sendUnaryData<JsonList>): void;
@@ -12291,6 +12509,15 @@ export namespace messages {
         };
         SetGroupMemberShareHistoryMode: GrpcUnaryServiceInterface<JidBoolRequest, Empty> = (message: JidBoolRequest, metadata: grpc_1.Metadata | grpc_1.CallOptions | grpc_1.requestCallback<Empty>, options?: grpc_1.CallOptions | grpc_1.requestCallback<Empty>, callback?: grpc_1.requestCallback<Empty>): grpc_1.ClientUnaryCall => {
             return super.SetGroupMemberShareHistoryMode(message, metadata, options, callback);
+        };
+        GetGroupMemberLabels: GrpcUnaryServiceInterface<JidRequest, JsonList> = (message: JidRequest, metadata: grpc_1.Metadata | grpc_1.CallOptions | grpc_1.requestCallback<JsonList>, options?: grpc_1.CallOptions | grpc_1.requestCallback<JsonList>, callback?: grpc_1.requestCallback<JsonList>): grpc_1.ClientUnaryCall => {
+            return super.GetGroupMemberLabels(message, metadata, options, callback);
+        };
+        GetGroupMemberLabel: GrpcUnaryServiceInterface<GroupMemberRequest, Json> = (message: GroupMemberRequest, metadata: grpc_1.Metadata | grpc_1.CallOptions | grpc_1.requestCallback<Json>, options?: grpc_1.CallOptions | grpc_1.requestCallback<Json>, callback?: grpc_1.requestCallback<Json>): grpc_1.ClientUnaryCall => {
+            return super.GetGroupMemberLabel(message, metadata, options, callback);
+        };
+        SetGroupMemberLabel: GrpcUnaryServiceInterface<JidStringRequest, Empty> = (message: JidStringRequest, metadata: grpc_1.Metadata | grpc_1.CallOptions | grpc_1.requestCallback<Empty>, options?: grpc_1.CallOptions | grpc_1.requestCallback<Empty>, callback?: grpc_1.requestCallback<Empty>): grpc_1.ClientUnaryCall => {
+            return super.SetGroupMemberLabel(message, metadata, options, callback);
         };
         UpdateGroupParticipants: GrpcUnaryServiceInterface<UpdateParticipantsRequest, JsonList> = (message: UpdateParticipantsRequest, metadata: grpc_1.Metadata | grpc_1.CallOptions | grpc_1.requestCallback<JsonList>, options?: grpc_1.CallOptions | grpc_1.requestCallback<JsonList>, callback?: grpc_1.requestCallback<JsonList>): grpc_1.ClientUnaryCall => {
             return super.UpdateGroupParticipants(message, metadata, options, callback);

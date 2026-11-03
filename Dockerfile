@@ -1,4 +1,4 @@
-ARG NODE_IMAGE_TAG=24.11-bookworm-slim
+ARG NODE_IMAGE_TAG=24.22-bookworm-slim
 ARG GOLANG_IMAGE_TAG=1.24-bookworm
 
 #
@@ -42,6 +42,15 @@ RUN if [ "$(uname -m)" = "x86_64" ]; then \
         cd /git/node_modules/sharp && \
         PATH="/git/node_modules/.bin:$PATH" CFLAGS="-march=x86-64" CXXFLAGS="-march=x86-64" node install/build.js; \
     fi
+
+#
+# Unit tests
+# Not part of the release chain, run with:
+# docker build --target test .
+#
+FROM build AS test
+ENV CI=true
+RUN yarn test
 
 #
 # Dashboard

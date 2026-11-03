@@ -23,6 +23,8 @@ import {
   ToGroupV2ParticipantsJoinRequestEvent,
   ToGroupV2ParticipantsEvent,
   ToGroupV2UpdateEvent,
+  ToGroupParticipantTag,
+  ToGroupV2ParticipantsTagEvent,
 } from '@waha/core/engines/webjs/groups.webjs';
 import {
   WebjsChannelMessage,
@@ -120,6 +122,7 @@ import {
   SettingsMemberShareHistoryMode,
   SettingsMembershipApproval,
   SettingsSecurityChangeInfo,
+  GroupParticipantTag,
 } from '@waha/structures/groups.dto';
 import { Label, LabelDTO, LabelID } from '@waha/structures/labels.dto';
 import { LidToPhoneNumber } from '@waha/structures/lids.dto';
@@ -209,6 +212,7 @@ import {
   WAJSPresenceChatStateType,
   WebJSPresence,
   WebJSPresenceUpdate,
+  WebJSGroupMemberTag,
 } from './types';
 import { WebJSAuthFactory } from './WebJSAuthFactory';
 import {
@@ -1570,6 +1574,8 @@ export class WhatsappSessionWebJSCore extends WhatsappSession {
       name: label.name,
       color: color,
       colorHex: Label.toHex(color),
+      type: label.type,
+      isActive: label.isActive,
     };
   }
 
@@ -1762,6 +1768,37 @@ export class WhatsappSessionWebJSCore extends WhatsappSession {
     const groupChat = (await this.whatsapp.getChatById(id)) as GroupChat;
     // The library setter is inverted - it takes "adminsOnly"
     return groupChat.setShareHistoryAdminsOnly(!value);
+  }
+
+  @Activity()
+  public async getGroupParticipantTags(
+    id: string,
+  ): Promise<GroupParticipantTag[]> {
+    const groupChat = (await this.whatsapp.getChatById(id)) as GroupChat;
+    const tags = await groupChat.getMemberTags();
+    return tags.map(ToGroupParticipantTag);
+  }
+
+  @Activity()
+  public async setGroupMemberTag(id: string, tag: string): Promise<boolean> {
+    const groupChat = (await this.whatsapp.getChatById(id)) as GroupChat;
+    return groupChat.setMyMemberTag(tag);
+  }
+
+  protected getMyParticipantId(me: MeInfo): string {
+    return me.id;
+  }
+
+  public async getGroupParticipantTag(
+    id: string,
+    participantId: string,
+  ): Promise<GroupParticipantTag> {
+    // Tags are keyed by phone number when the mapping is known
+    if (isLidUser(participantId)) {
+      const result = await this.findPNByLid(participantId);
+      participantId = result.pn || participantId;
+    }
+    return super.getGroupParticipantTag(id, participantId);
   }
 
   @Activity()
@@ -2569,6 +2606,17 @@ export class WhatsappSessionWebJSCore extends WhatsappSession {
     this.events2
       .get(WAHAEvents.GROUP_V2_PARTICIPANTS_JOIN_REQUEST)
       .switch(groupV2ParticipantsJoinRequest$);
+
+    const groupV2ParticipantsTag$ = fromEvent<WebJSGroupMemberTag>(
+      this.whatsapp.events,
+      'group.member-tag',
+    ).pipe(
+      filter((data) => this.jids.include(data.group)),
+      map(ToGroupV2ParticipantsTagEvent),
+    );
+    this.events2
+      .get(WAHAEvents.GROUP_V2_PARTICIPANTS_TAG)
+      .switch(groupV2ParticipantsTag$);
 
     const groupUpdate$ = fromEvent<GroupNotification>(
       this.whatsapp,
