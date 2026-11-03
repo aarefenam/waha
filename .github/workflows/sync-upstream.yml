@@ -38,9 +38,16 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
+      # GITHUB_TOKEN tidak boleh mendorong perubahan di .github/workflows/.
+      # Setiap kali upstream mengubah file workflow, push ditolak ("refusing to
+      # allow a GitHub App to create or update workflow ... without `workflows`
+      # permission") dan sync macet sampai didorong manual. Secret SYNC_TOKEN
+      # (fine-grained PAT, repo ini saja: Contents + Workflows read/write)
+      # menghilangkan batasan itu. Tanpa secret, jatuh ke GITHUB_TOKEN.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: Configure git identity
         run: |
@@ -116,6 +123,7 @@ jobs:
               'Common causes:',
               '- A commit landed directly on the mirror branch, which blocks the fast-forward.',
               '- The merge into the deploy branch hit a conflict and needs a manual merge.',
+              '- Upstream changed a file under .github/workflows/ and the SYNC_TOKEN secret is missing or expired. Push manually with an account that has the `workflow` scope, then renew the secret.',
               '',
               'The server keeps running the currently deployed version until this is resolved.',
             ].join('\n');
