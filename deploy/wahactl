@@ -746,7 +746,11 @@ function cmd_selfupdate() {
 
   if [ "$behind" -eq 0 ]; then
     info "Sudah terbaru (branch ${branch}). Tidak ada yang perlu di-deploy."
-    return 1
+    # Exit 1 hanya bermakna untuk --check ("tidak ada update"). Untuk deploy,
+    # sudah terbaru itu sukses - kalau tidak, systemd menandai service failed
+    # tiap minggu tanpa update dan kegagalan sungguhan jadi tidak kelihatan.
+    [ "$check_only" = 'true' ] && return 1
+    return 0
   fi
 
   info "Ada ${behind} commit baru di origin/${branch}:"
@@ -894,15 +898,20 @@ function cmd_prune() {
   # Sengaja TIDAK pakai `docker system prune -a` atau `docker image prune`:
   # keduanya menghapus image project lain di server ini.
   info "Menghapus tag versi waha-local lama yang tidak dipakai container mana pun"
-  local in_use ref
-  in_use="$(docker ps -a --format '{{.Image}}' | sort -u)"
+  # Bandingkan image ID, bukan nama. Container dibuat dari tag bergerak
+  # (waha-local:nobrowser), jadi tag versi dari image yang sedang jalan
+  # (waha-local:nobrowser-<sha>) tidak pernah cocok secara nama dan ikut
+  # terhapus - padahal itu satu-satunya jalur rollback update berikutnya.
+  local in_use ref id
+  in_use="$(docker ps -aq | xargs -r docker inspect -f '{{.Image}}' | sort -u)"
   while read -r ref; do
     [ -n "$ref" ] || continue
     # tag bergerak selalu dipertahankan
     case "$ref" in
     waha-local:nobrowser | waha-local:browser) continue ;;
     esac
-    if echo "$in_use" | grep -qx "$ref"; then
+    id="$(docker image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)"
+    if [ -n "$id" ] && echo "$in_use" | grep -qx "$id"; then
       continue
     fi
     info "hapus ${ref}"
